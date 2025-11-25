@@ -51,7 +51,7 @@ def get_tiles():
     summary_file_location = "VLASS_dyn_summary.php"
     if not os.path.exists(summary_file_location):
         os.system(
-            "wget https://raw.githubusercontent.com/lmorabit/lofar-vlbi/master/VLASS_dyn_summary.php"
+            "wget https://raw.githubusercontent.com/LOFAR-VLBI/lofar-vlbi-pipeline/refs/heads/master/VLASS_dyn_summary.php"
         )
 
     names, dec_min, dec_max, ra_min, ra_max, epoch, obsdate = np.loadtxt(
