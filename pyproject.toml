@@ -5,7 +5,7 @@ authors = [
     {name = "Frist Sweijen"},
     {name = "Leah Morabito"}
 ]
-version = "2025.12.1"
+version = "2025.12.2"
 description = "lofar-vlbi-pipeline containing the cli tool plot_field"
 readme = "README.md"
 requires-python = ">=3.11"
