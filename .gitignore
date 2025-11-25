@@ -4,10 +4,17 @@ docs/_*
 docs/build
 *.csv
 output.png
-*cache*
+spectrum*.png
+
+*.fit
+*.fits
+*output.png
+
+#Ruff and venv
+__pycache__
+.ruff_cache
 .venv
+assets
 build
 dist
-*egg*
-VLASS*
-assets
+lofar_vlbi_pipeline.egg-info

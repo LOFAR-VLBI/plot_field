@@ -21,9 +21,6 @@ from astropy.wcs.utils import skycoord_to_pixel
 from astropy.wcs import WCS
 from astropy.nddata import Cutout2D
 
-
-from urllib.request import urlopen
-
 # Settings to potentially tweak
 summary_file_location = "VLASS_dyn_summary.php"
 crop = True
@@ -273,6 +270,14 @@ if __name__ == "__main__":
     except IndexError:
         ra = float(sys.argv[1])
         dec = float(sys.argv[2])
+    except ValueError:
+        import casacore.tables as pt
+        pi = 3.14159265358979
+        table = pt.table(sys.argv[1] + "::FIELD")
+        direction = table.getcol("PHASE_DIR").squeeze()
+        ra = (direction[0] % (2 * pi)) / pi * 180
+        dec = direction[1] / pi * 180
+        table.close()
     except Exception:
         raise TypeError(
             "Incorrect inputs given. Usage: vlass_search.py <RA [deg]> <Dec [deg]> or vlass_search.py <MS>"

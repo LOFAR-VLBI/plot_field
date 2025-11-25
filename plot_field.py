@@ -5,7 +5,7 @@ import logging
 import io
 import numpy as np
 import pyvo as vo
-from astropy.table import Table, Column, hstack
+from astropy.table import Table, Column, hstack, unique
 import argparse
 
 # from lofarpipe.support.data_map import DataMap
@@ -15,8 +15,37 @@ from astropy.coordinates import SkyCoord
 from astropy import units as u
 from astropy.io import fits
 from astropy.wcs import WCS
+from requests.adapters import Retry, HTTPAdapter
 from time import sleep
 
+def format_skycoord(skycoord: SkyCoord) -> str:
+    """
+    Convert an Astropy SkyCoord to a string formatted as "hhmmss.ss+ddmmss.s"
+
+    Arguments:
+        skycoord (astropy.coordinates.SkyCoord): Input coordinate to format.
+
+    Returns:
+        str: Formatted string in the format "hhmmss.ss+ddmmss.s"
+    """
+    ra = skycoord.ra.to_value('hourangle')
+    dec = skycoord.dec.to_value('deg')
+
+    ra_hours = int(ra)
+    ra_minutes = int((ra - ra_hours) * 60)
+    ra_seconds = ((ra - ra_hours) * 60 - ra_minutes) * 60
+
+    dec_degrees = int(dec)
+    dec_arcminutes = int(abs((dec - dec_degrees) * 60))
+    dec_arcseconds = abs(((dec - dec_degrees) * 60 - dec_arcminutes) * 60)
+
+    ra_str = f"ILTJ{ra_hours:02d}{ra_minutes:02d}{ra_seconds:05.2f}"
+
+    dec_sign = '+' if dec >= 0 else '-'
+    dec_degrees = abs(dec_degrees)
+    dec_str = f"{dec_sign}{dec_degrees:02d}{dec_arcminutes:02d}{dec_arcseconds:04.1f}"
+
+    return ra_str + dec_str
 
 def sum_digits(n):
     s = 0
@@ -179,14 +208,29 @@ def my_lotss_catalogue(
         else:
             # To get the combined source catalogue, query the surveys server
             print("Using the lofar-surveys catalogue!")
-            r = requests.get(
-                "https://lofar-surveys.org/catalogue_search.csv?ra=%f&dec=%f&radius=%f"
-                % (RATar, DECTar, Radius)
+            session = requests.Session()
+            # Will wait for 0, 20, 40 seconds between attempts.
+            retries = Retry(
+                total=8, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504],
+                allowed_methods=["GET", "POST"]
             )
+            session.mount("https://", HTTPAdapter(max_retries=retries))
+
+            r = session.get(
+                "https://lofar-surveys.org/catalogue_search.csv?ra=%f&dec=%f&radius=%f"
+                % (RATar, DECTar, Radius),
+                timeout=50,
+            )
+            # Successful HTTP requests return 200.
+            if r.status_code != 200:
+                raise RuntimeError(
+                    "Unsuccessful HTTP request querying https://lofar-surveys.org/catalogue_search.csv"
+                )
             tb = Table.read(r.text.split("\n"), format="csv")
             print("Got a table with", len(tb), "entries")
             tb["Maj"].name = "Majax"
             tb["Min"].name = "Minax"
+            session.close()
 
         flux_sort = tb.argsort("Total_flux")
         tb_sorted = tb[flux_sort[::-1]]
@@ -520,7 +564,9 @@ def smearing_calculation(
 
 
 def angular_distance(RA1, DEC1, RA2, DEC2):
-    return np.sqrt((RA1 - RA2) ** 2 + (DEC1 - DEC2) ** 2)
+    c1 = SkyCoord(RA1, DEC1, unit="deg")
+    c2 = SkyCoord(RA2, DEC2, unit="deg")
+    return c1.separation(c2).value
 
 
 def smallest_distance(RA, DEC, lbcs_catalogue):
@@ -547,7 +593,7 @@ def make_plot(
     outdir=".",
 ):
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Circle
+    from astropy.visualization.wcsaxes import SphericalCircle
 
     mkfits(RA, DEC, 2048, 2.6367)
 
@@ -558,12 +604,12 @@ def make_plot(
 
     if os.path.exists(lotss_catalogue):
         lotss = Table.read(lotss_catalogue)
-
+        avg_flux = np.median(lotss["Total_flux"])
     scaling = 0.1
 
     thres_radii = smearing_calculation(nchan=nchan, av_time=av_time)
 
-    plt.figure(figsize=(10, 10))
+    plt.figure(figsize=(12, 12))
 
     ax = plt.subplot(
         projection=w,
@@ -573,21 +619,23 @@ def make_plot(
     fraction = ["80%", "60%", "40%", "20%"]
     for i, thresh in enumerate(thres_radii):
         color = color + 0.1
-        c = Circle(
-            (RA, DEC),
-            thresh,
+        centre_coord = SkyCoord(RA, DEC, unit="deg")
+        c = SphericalCircle(
+            centre_coord,
+            thresh * u.deg,
             edgecolor=None,
             facecolor=str(color),
             transform=ax.get_transform("fk5"),
             zorder=-1,
         )
-        ax.text(
-            RA + 0.98 * thresh,
-            DEC,
-            fraction[i],
-            transform=ax.get_transform("fk5"),
-            fontsize="large",
-        )
+        # print(RA, RA + thresh[0])
+        # ax.text(
+        #     RA + thresh[0],
+        #     DEC,
+        #     fraction[i],
+        #     transform=ax.get_transform("fk5"),
+        #     fontsize="large",
+        # )
         ax.add_patch(c)
 
     ax.scatter(
@@ -636,9 +684,9 @@ def make_plot(
         label="LBCS Sources",
     )
 
-    c = Circle(
-        (RA, DEC),
-        1.5,
+    c = SphericalCircle(
+        centre_coord,
+        1.5 * u.deg,
         edgecolor="yellow",
         facecolor="none",
         transform=ax.get_transform("fk5"),
@@ -648,6 +696,7 @@ def make_plot(
     ### Calculate and plot smallest distance to target
     dist_ids, dist = smallest_distance(RA, DEC, lbcs)
 
+    closest_calib = lbcs[dist_ids]
     ax.plot(
         [RA, lbcs_catalogue[0]["RA"]],
         [DEC, lbcs_catalogue[0]["DEC"]],
@@ -657,7 +706,7 @@ def make_plot(
         label="Distance = %.2f degrees" % dist[0],
     )
 
-    if targRA is not None:
+    if targRA != None:
         ax.scatter(
             targRA,
             targDEC,
@@ -687,9 +736,9 @@ def make_plot(
             "%.2f Jy" % (lbcs[i]["Total_flux"] / 1000),
             transform=ax.get_transform("fk5"),
         )
-    plt.legend(fontsize="x-large")
+    plt.legend(fontsize="large", loc="upper right")
 
-    plt.savefig(os.path.join(outdir, "output.png"))
+    plt.savefig(os.path.join(outdir, f"{RA}_{DEC}_output.png"))
     os.system("rm temp.fits")
 
 
@@ -738,6 +787,149 @@ def convert_cutout(fitsfile):
     plt.axis("off")
 
     plt.savefig("assets/cutout.png", bbox_inches="tight", pad_inches=0)
+
+
+def fit_spectrum(delay_cals_file, outdir):
+    from fit_synchrotron_spectrum import (
+            fit_from_NED,
+            fit_from_trusted_surveys,
+        )
+    result = Table.read(delay_cals_file)
+    # Empty columns for fitting parameters within delay calibration
+    total_flux_column = Column([None] * len(result), name="fit_flux", unit="Jy")
+    alpha_1_column = Column([None] * len(result), name="alpha_1")
+    alpha_2_column = Column([None] * len(result), name="alpha_2")
+    survey_column = Column([None] * len(result), name="Catalogue")
+    chi_sqr = Column([None] * len(result), name="chi_sqr")
+    no_points_column = Column([None] * len(result), name="phot_points")
+    result.add_column(total_flux_column)
+    result.add_column(alpha_1_column)
+    result.add_column(alpha_2_column)
+    result.add_column(chi_sqr)
+    result.add_column(no_points_column)
+    result.add_column(survey_column)
+    result.write(delay_cals_file, format="csv", overwrite=True)
+
+    for i, source in enumerate(result):
+        fit_parameters_trusted = None
+        fit_parameters_NED = None
+        chi_square = None
+        no_points = 0
+
+        try:
+            fit = fit_from_trusted_surveys(source["RA"], source["DEC"], 12.0, outdir)
+            fit_parameters_trusted, chi_square = fit.fit_parameters, fit.stats
+            no_points = fit.freq_points
+            if chi_square > 20 or np.abs(fit_parameters_trusted[1]) > 3:
+                print(
+                    f"Calibrator {source['Source_id']} has a poor fit! (χ² = {chi_square:.2f})"
+                )
+                fit_parameters_trusted, chi_square = None, None
+                raise ValueError
+        except (ValueError, TypeError, IndexError):
+            try:
+                fit = fit_from_NED(source["RA"], source["DEC"], 12.0, outdir)
+                fit_parameters_NED, chi_square = fit.fit_parameters, fit.stats
+                no_points = fit.freq_points
+            except (ValueError, TypeError):
+                print(
+                    f"Calibrator {source['Source_id']} could not be fit with NED or trusted surveys!"
+                )
+
+        if fit_parameters_NED is not None:
+            fitting_parameters = np.append(fit_parameters_NED, "NED")
+        elif fit_parameters_trusted is not None:
+            fitting_parameters = np.append(fit_parameters_trusted, "Trusted")
+        else:
+            fitting_parameters = [None, None, None, None]
+
+        result["fit_flux"][i] = fitting_parameters[0]
+        result["alpha_1"][i] = fitting_parameters[1]
+        result["alpha_2"][i] = fitting_parameters[2]
+        result["chi_sqr"][i] = chi_square
+        result["phot_points"][i] = no_points
+        result["Catalogue"][i] = fitting_parameters[3]
+    result.write(delay_cals_file, format="csv", overwrite=True)
+
+
+def ps_match(file):
+    t = Table.read(file)
+
+    ps_id_column = Column([None] * len(t), name="ps_id")
+    ps_ra_column = Column([None] * len(t), name="ps_RA", unit="deg")
+    ps_dec_column = Column([None] * len(t), name="ps_DEC", unit="deg")
+
+    t.add_column(ps_id_column)
+    t.add_column(ps_ra_column)
+    t.add_column(ps_dec_column)
+
+    targets = []
+    for source in t:
+        id = source["Source_id"]
+        ra = source["RA"]
+        dec = source["DEC"]
+
+        dict = {"ra": str(ra), "dec": str(dec), "target": str(id)}
+
+        targets.append(dict)
+
+    data = {
+        "targets": targets,
+        "resolve": "False",
+        "radius": 0.000833 / 3,
+    }  # 1 arcsecond
+
+    URL = "https://catalogs.mast.stsci.edu/api/v0.1/panstarrs/dr2/mean/crossmatch/csv"
+    r = requests.post(URL, json=data)
+    if len(r.text) > 10:
+        out_t = Table.read(r.text, format="csv")
+
+        out_t = unique(out_t, keys="_searchID_")
+        out_t.sort(keys=["_searchID_"])
+
+        for source in out_t:
+            index = source["_searchID_"]
+            t["ps_id"][index] = source["MatchID"]
+            t["ps_RA"][index] = source["MatchRA"]
+            t["ps_DEC"][index] = source["MatchDEC"]
+
+    t.write(file, overwrite=True)
+
+
+def gaia_quasar_match(file):
+    from astroquery.vizier import Vizier
+
+    t = Table.read(file)
+    t["_RAJ2000"] = t["RA"] * u.deg
+    t["_DEJ2000"] = t["DEC"] * u.deg
+    CatNorth = "J/ApJS/271/54/table4"
+
+    v = Vizier(catalog=CatNorth, columns=["Gaia", "RA_ICRS", "DE_ICRS"])
+
+    # Match against table
+    print(f"Querying GAIA quasars for {file}")
+    out = v.query_region(t, radius="2s", inner_radius="0.01s", cache=False)
+    if out:
+        key = out.keys()[0]
+        print(f"Found {len(out[key])} quasar cross-matches")
+    else:
+        print("Found no cross matches to GAIA quasars")
+
+    gaia_id_column = Column([None] * len(t), name="gaia_id")
+    gaia_ra_column = Column([None] * len(t), name="gaia_RA", unit="deg")
+    gaia_dec_column = Column([None] * len(t), name="gaia_DEC", unit="deg")
+
+    t.add_column(gaia_id_column)
+    t.add_column(gaia_ra_column)
+    t.add_column(gaia_dec_column)
+
+    for source in out:
+        index = source["_q"] - 1
+        t["gaia_id"][index] = source["Gaia"]
+        t["gaia_RA"][index] = source["RA_ICRS"]
+        t["gaia_DEC"][index] = source["DE_ICRS"]
+
+    t.write(file, overwrite=True)
 
 
 def make_html(
@@ -979,6 +1171,8 @@ def generate_catalogues(
     html=False,
     outdir=".",
     pointing=None,
+    fit_spec=False,
+    force=False,
 ):
     # def plugin_main( RA, DEC, **kwargs ):
     #    im_radius = float(kwargs['im_radius'])
@@ -993,7 +1187,9 @@ def generate_catalogues(
     ## prepend everything with outdir
     if not os.path.exists(outdir):
         os.mkdir(outdir)
-    lotss_catalogue = os.path.join(outdir, lotss_catalogue)
+    ## if using a user-defined catalogue, don't rename it
+    if lotss_catalogue == 'lotss_catalogue.csv':
+        lotss_catalogue = os.path.join(outdir, lotss_catalogue)
     lbcs_catalogue = os.path.join(outdir, lbcs_catalogue)
     lotss_result_file = os.path.join(outdir, lotss_result_file)
     delay_cals_file = os.path.join(outdir, delay_cals_file)
@@ -1001,18 +1197,21 @@ def generate_catalogues(
 
     ## first check for a valid delay_calibrator file
     if os.path.isfile(delay_cals_file):
-        print("Delay calibrators file {:s} exists! returning.".format(delay_cals_file))
-        choice = input(
-            "Would you like to overwrite catalogues? Press y to cotinue and overwrite, n to exit: "
-        )
-        if choice == "y":
+    #if os.path.isfile(lbcs_catalogue) or os.path.isfile(lotss_catalogue):
+        print("Delay calibrators file {:s} already exists!".format(delay_cals_file))
+        if force:
+            print("Forcing overwrite")
             os.remove(delay_cals_file)
             os.remove(lotss_catalogue)
             os.remove(lbcs_catalogue)
-            os.remove(lotss_result_file)
-            os.remove(extreme_file)
+            try:
+                os.remove(lotss_result_file)
+                os.remove(extreme_file)
+            except:
+                print("No LoTSS files")
             pass
         else:
+            print("Returning!")
             return
 
     ## look for or download LBCS
@@ -1020,6 +1219,8 @@ def generate_catalogues(
     lbcs_catalogue = my_lbcs_catalogue(
         RATar, DECTar, Radius=lbcs_radius, outfile=lbcs_catalogue
     )
+
+    sleep(2)
     ## look for or download LoTSS
     print("Attempting to find or download LoTSS catalogue.")
     lotss_catalogue = my_lotss_catalogue(
@@ -1040,6 +1241,7 @@ def generate_catalogues(
         bright_limit_Jy=1000.0,
         faint_limit_Jy=10.0,
         outfile=os.path.join(outdir, "extreme_catalogue.csv"),
+        use_vo=True
     )
     extreme_catalogue = remove_multiples_position(extreme_catalogue)
     ## if lbcs exists, and either lotss exists or continue_without_lotss = True, continue
@@ -1049,7 +1251,7 @@ def generate_catalogues(
         return
     if len(lotss_catalogue) == 0 and not continue_no_lotss:
         logging.error(
-            "LoTSS coverage does not exist, and contine_without_lotss is set to False."
+            "LoTSS coverage does not exist, and contine_no_lotss is set to False."
         )
         return
 
@@ -1072,8 +1274,8 @@ def generate_catalogues(
         seps = Column(separations.deg, name="Radius")
         lbcs_catalogue.add_column(seps)
 
-        ## rename the source_id column
-        lbcs_catalogue.rename_column("Observation", "Source_id")
+        # Create an ILTJhhmmss.ss+ddmmss.s name on-the-fly.
+        lbcs_catalogue["Source_id"] = [format_skycoord(SkyCoord(ra, dec, unit="deg")) for (ra, dec) in zip(lbcs_catalogue["RA"], lbcs_catalogue["DEC"])]
 
         ## add in some dummy data
         Total_flux = Column(
@@ -1175,7 +1377,7 @@ def generate_catalogues(
             nsrcs = float(len(sources_to_image))
             print(
                 "There are "
-                + str(len(lbcs_catalogue))
+                + str(len(result))
                 + " delay calibrators within "
                 + str(im_radius)
                 + " degrees of the pointing centre"
@@ -1190,6 +1392,11 @@ def generate_catalogues(
                 + " degrees of the phase centre."
             )
             sources_to_image.write(lotss_result_file, format="csv", overwrite=True)
+            gaia_quasar_match(lotss_result_file)
+            ps_match(lotss_result_file)
+
+    gaia_quasar_match(delay_cals_file)
+    ps_match(delay_cals_file)
 
     print("Assumed averaging - nchannels: %s; time averaging: %s" % (nchan, av_time))
     make_plot(
@@ -1205,8 +1412,11 @@ def generate_catalogues(
         outdir=outdir,
     )
 
+    if fit_spec:
+        fit_spectrum(delay_cals_file, outdir)
+
     if vlass:
-        from .vlass_search import search_vlass
+        from vlass_search import search_vlass
 
         ## Get cutouts of all LBCS sources
         print("Getting cutouts of LBCS sources")
@@ -1240,7 +1450,7 @@ def generate_catalogues(
     # return
 
 
-def app():
+if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
         "--output_dir",
@@ -1357,6 +1567,22 @@ def app():
         default=False,
     )
 
+    parser.add_argument(
+        "--fit_spec",
+        dest="fit_spec",
+        action="store_true",
+        help="Perform spectral fitting",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="Force overwrite of existing csvs",
+        default=False,
+    )
+
     parser.add_argument("--RA", type=float, dest="RA", help="Ptg RA in deg")
     parser.add_argument("--DEC", type=float, dest="DEC", help="Ptg DEC in deg")
     parser.add_argument("--pointing", type=str, dest="pointing", help="Pointing name")
@@ -1391,11 +1617,9 @@ def app():
         html=args.html,
         outdir=args.outdir,
         pointing=args.pointing,
+        fit_spec=args.fit_spec,
+        force=args.force
     )
-
-
-if __name__ == "__main__":
-    app()
 
 
 ### TO DO LIST
