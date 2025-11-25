@@ -1,10 +1,14 @@
 [project]
 name = "lofar-vlbi-pipeline"
-authors = []
+authors = [
+    {name = "James Petley"},
+    {name = "Frist Sweijen"},
+    {name = "Leah Morabito"}
+]
 version = "2025.12.0"
 description = "lofar-vlbi-pipeline containing the cli tool plot_field"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "astropy>=7.0.0",
     "astroquery>=0.4.11",
@@ -12,8 +16,9 @@ dependencies = [
     "pyvo>=1.6",
     "requests>=2.32.3",
     "scipy>=1.14.1",
+    "setuptools>=80.9.0",
 ]
-license = {file = "LICENSE"}
+license = "GPL-3.0-or-later"
 keywords = ["radio", "astronomy", "VLBI", "LOFAR"]
 
 [project.urls]
