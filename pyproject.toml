@@ -33,7 +33,7 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project.scripts]
-plot_field = "plot_field.plot_field:main"
+plot-field = "plot_field.plot_field:main"
 lofar-vlbi-pipeline = "plot_field:main"
 
 [tool.uv]
