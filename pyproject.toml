@@ -5,7 +5,7 @@ authors = [
     {name = "Frist Sweijen"},
     {name = "Leah Morabito"}
 ]
-version = "2025.12.0"
+version = "2025.12.1"
 description = "lofar-vlbi-pipeline containing the cli tool plot_field"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -34,6 +34,7 @@ build-backend = "setuptools.build_meta"
 
 [project.scripts]
 plot_field = "plot_field.plot_field:main"
+lofar-vlbi-pipeline = "plot_field:main"
 
 [tool.uv]
 package = true
