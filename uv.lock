@@ -598,12 +598,13 @@ wheels = [
 
 [[package]]
 name = "lofar-vlbi-pipeline"
-version = "2025.12.1"
+version = "2025.12.2"
 source = { editable = "." }
 dependencies = [
     { name = "astropy" },
     { name = "astroquery" },
     { name = "matplotlib" },
+    { name = "numpy" },
     { name = "pyvo" },
     { name = "requests" },
     { name = "scipy" },
@@ -615,6 +616,7 @@ requires-dist = [
     { name = "astropy", specifier = ">=7.0.0" },
     { name = "astroquery", specifier = ">=0.4.11" },
     { name = "matplotlib", specifier = ">=3.9.3" },
+    { name = "numpy", specifier = ">=2.3.5" },
     { name = "pyvo", specifier = ">=1.6" },
     { name = "requests", specifier = ">=2.32.3" },
     { name = "scipy", specifier = ">=1.14.1" },

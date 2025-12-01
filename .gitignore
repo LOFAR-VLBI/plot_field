@@ -9,6 +9,7 @@ spectrum*.png
 *.fit
 *.fits
 *output.png
+*_vlass.png
 .token
 
 #Ruff and venv

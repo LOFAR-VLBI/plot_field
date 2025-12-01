@@ -1431,7 +1431,7 @@ def generate_catalogues(
                 os.system("mv vlass_post**.fits  %s" % outfile)
                 convert_vlass_fits(outfile)
             except Exception:
-                pass
+                print(f"VLASS Download filed for {source['Observation']}")
 
     if html:
         app = make_html(
@@ -1452,7 +1452,10 @@ def generate_catalogues(
 
 
 def parse_args():
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        prog = "plot-field",
+        description="Download and plot LOFAR data regarding a field of interest. This provides the information needed to run the PiLOT pipeline.",
+    )
     parser.add_argument(
         "--output_dir",
         dest="outdir",

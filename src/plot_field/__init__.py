@@ -2,9 +2,9 @@ import numpy
 
 
 def main():
-    from plot_field.plot_field import main 
+    from plot_field.plot_field import main as plot_field_main
 
-    main()
+    plot_field_main()
 
 
 def hello(n: int) -> str:

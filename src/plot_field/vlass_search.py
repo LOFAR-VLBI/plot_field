@@ -20,9 +20,11 @@ from astropy.coordinates import SkyCoord
 from astropy.wcs.utils import skycoord_to_pixel
 from astropy.wcs import WCS
 from astropy.nddata import Cutout2D
+from urllib.request import urlopen
+from importlib.resources import files
 
 # Settings to potentially tweak
-summary_file_location = "VLASS_dyn_summary.php"
+summary_file_location = files("plot_field").joinpath("VLASS_dyn_summary.php")
 crop = True
 crop_scale = 256
 consider_QA_rejected = True
@@ -48,11 +50,7 @@ def get_tiles():
     Returns: tile names (numpy str), dec_min (numpy float), dec_max (numpy float), ra_min (numpy float), ra_max (numpy float), observing epoch (numpy str), observation date (numpy str)
     """
 
-    summary_file_location = "VLASS_dyn_summary.php"
-    if not os.path.exists(summary_file_location):
-        os.system(
-            "wget https://raw.githubusercontent.com/LOFAR-VLBI/lofar-vlbi-pipeline/refs/heads/master/VLASS_dyn_summary.php"
-        )
+    summary_file_location = files("plot_field").joinpath("VLASS_dyn_summary.php")
 
     names, dec_min, dec_max, ra_min, ra_max, epoch, obsdate = np.loadtxt(
         summary_file_location,
@@ -284,12 +282,6 @@ if __name__ == "__main__":
         )
 
     c = SkyCoord(ra, dec, unit="deg")
-
-    if not glob.glob(summary_file_location):
-        os.system(
-            "wget https://raw.githubusercontent.com/lmorabit/lofar-vlbi/master/VLASS_dyn_summary.php"
-        )
-        # raise FileNotFoundError(errno.ENOENT, os.strerror(errno.ENOENT), summary_file_location)
 
     search_vlass(
         c, crop=crop, crop_scale=crop_scale, consider_QA_rejected=consider_QA_rejected
