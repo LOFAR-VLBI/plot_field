@@ -5,10 +5,12 @@ docs/build
 *.csv
 output.png
 spectrum*.png
-src
+
 *.fit
 *.fits
 *output.png
+*_vlass.png
+.token
 
 #Ruff and venv
 __pycache__
@@ -18,5 +20,3 @@ assets
 build
 dist
 lofar_vlbi_pipeline.egg-info
-
-

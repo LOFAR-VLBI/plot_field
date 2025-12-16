@@ -790,7 +790,7 @@ def convert_cutout(fitsfile):
 
 
 def fit_spectrum(delay_cals_file, outdir):
-    from fit_synchrotron_spectrum import (
+    from plot_field.fit_synchrotron_spectrum import (
             fit_from_NED,
             fit_from_trusted_surveys,
         )
@@ -946,10 +946,9 @@ def make_html(
 ):
     # Check if required packages are installed
     try:
-        from dash import Dash, dcc, html, Input, Output, no_update
+        from dash import Dash, dcc, html, Input, Output
         import plotly.graph_objects as go
         from dash.exceptions import PreventUpdate
-        import base64
     except ImportError:
         # If not, inform user of commands to install
         print("Please install the following packages to run this function:")
@@ -972,7 +971,6 @@ def make_html(
     #    df = pd.read_csv(data_path, header=0,)
 
     print(df)
-    observation = df["Observation"]
 
     fig = go.Figure(
         data=[
@@ -1418,7 +1416,7 @@ def generate_catalogues(
         fit_spectrum(delay_cals_file, outdir)
 
     if vlass:
-        from vlass_search import search_vlass
+        from plot_field.vlass_search import search_vlass
 
         ## Get cutouts of all LBCS sources
         print("Getting cutouts of LBCS sources")
@@ -1432,8 +1430,8 @@ def generate_catalogues(
                 search_vlass(c, crop=True, crop_scale=256)
                 os.system("mv vlass_post**.fits  %s" % outfile)
                 convert_vlass_fits(outfile)
-            except:
-                pass
+            except Exception:
+                print(f"VLASS Download filed for {source['Observation']}")
 
     if html:
         app = make_html(
@@ -1449,8 +1447,189 @@ def generate_catalogues(
             pointing=pointing,
         )
         app.run_server(debug=True, use_reloader=False)
+
     # return
 
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        prog = "plot-field",
+        description="Download and plot LOFAR data regarding a field of interest. This provides the information needed to run the PiLOT pipeline.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        dest="outdir",
+        type=str,
+        help="directory to save results in [default cwd]",
+        default=".",
+    )
+    parser.add_argument(
+        "--lotss_radius",
+        dest="lotss_radius",
+        type=float,
+        help="Radius to search LoTSS",
+        default=1.5,
+    )
+    parser.add_argument(
+        "--lbcs_radius",
+        dest="lbcs_radius",
+        type=float,
+        help="Radius to search LBCS",
+        default=1.5,
+    )
+    parser.add_argument(
+        "--im_radius",
+        dest="im_radius",
+        type=float,
+        help="Radius in which to image",
+        default=1.24,
+    )
+    parser.add_argument(
+        "--lotss_catalogue",
+        dest="lotss_catalogue",
+        type=str,
+        help="input file for LoTSS catalogue [will be downloaded if does not exist]",
+        default="lotss_catalogue.csv",
+    )
+    parser.add_argument(
+        "--lbcs_catalogue",
+        dest="lbcs_catalogue",
+        type=str,
+        help="input file for LBCS catalogue [will be downloaded if does not exist]",
+        default="lbcs_catalogue.csv",
+    )
+    parser.add_argument(
+        "--lotss_result_file",
+        dest="lotss_result_file",
+        type=str,
+        help="output file of sources to image",
+        default="image_catalogue.csv",
+    )
+    parser.add_argument(
+        "--delay_cals_file",
+        dest="delay_cals_file",
+        type=str,
+        help="output file of delay calibrators",
+        default="delay_calibrators.csv",
+    )
+    parser.add_argument(
+        "--match_tolerance",
+        dest="match_tolerance",
+        type=float,
+        help="radius for matching LBCS to LoTSS [arcsec]",
+        default=5.0,
+    )
+    parser.add_argument(
+        "--bright_limit_Jy",
+        dest="bright_limit_Jy",
+        type=float,
+        help="Flux limit for bright sources [Jy]",
+        default=5.0,
+    )
+    parser.add_argument(
+        "--image_limit_Jy",
+        dest="image_limit_Jy",
+        type=float,
+        help="Flux limit for which sources to image [Jy]",
+        default=0.01,
+    )
+    parser.add_argument(
+        "--continue_no_lotss",
+        dest="continue_no_lotss",
+        action="store_true",
+        help="Continue with the pipeline if no lotss cross-matches can be found?",
+        default=False,
+    )
+    parser.add_argument("--targRA", type=float, dest="targRA", help="Target RA in deg")
+    parser.add_argument(
+        "--targDEC", type=float, dest="targDEC", help="Target DEC in deg"
+    )
+    parser.add_argument(
+        "--nchan",
+        dest="nchan",
+        type=int,
+        help="Number of frequency channels",
+        default=16,
+    )
+    parser.add_argument(
+        "--av_time", dest="av_time", type=float, help="Time averaging", default=1.0
+    )
+
+    parser.add_argument("--MS", type=str, dest="MS", help="Measurement Set")
+    parser.add_argument(
+        "--vlass",
+        dest="vlass",
+        action="store_true",
+        help="Get VLASS cutouts of delay_calibraors.csv sources",
+        default=False,
+    )
+    parser.add_argument(
+        "--html",
+        dest="html",
+        action="store_true",
+        help="Create html page of plots",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--fit_spec",
+        dest="fit_spec",
+        action="store_true",
+        help="Perform spectral fitting",
+        default=False,
+    )
+
+    parser.add_argument(
+        "--force",
+        dest="force",
+        action="store_true",
+        help="Force overwrite of existing csvs",
+        default=False,
+    )
+
+    parser.add_argument("--RA", type=float, dest="RA", help="Ptg RA in deg")
+    parser.add_argument("--DEC", type=float, dest="DEC", help="Ptg DEC in deg")
+    parser.add_argument("--pointing", type=str, dest="pointing", help="Pointing name")
+
+    args = parser.parse_args()
+    return args
+
+
+def main():
+
+    args = parse_args()
+
+    if args.MS is not None:
+        print("Using MS to get RA and DEC")
+        ptgRA, ptgDEC = grab_coo_MS(args.MS)
+    else:
+        ptgRA, ptgDEC = args.RA, args.DEC
+
+    generate_catalogues(
+        float(ptgRA),
+        float(ptgDEC),
+        targRA=args.targRA,
+        targDEC=args.targDEC,
+        lotss_radius=args.lotss_radius,
+        lbcs_radius=args.lbcs_radius,
+        im_radius=args.im_radius,
+        bright_limit_Jy=args.bright_limit_Jy,
+        lotss_catalogue=args.lotss_catalogue,
+        lbcs_catalogue=args.lbcs_catalogue,
+        lotss_result_file=args.lotss_result_file,
+        delay_cals_file=args.delay_cals_file,
+        match_tolerance=args.match_tolerance,
+        image_limit_Jy=args.image_limit_Jy,
+        continue_no_lotss=args.continue_no_lotss,
+        nchan=args.nchan,
+        av_time=args.av_time,
+        vlass=args.vlass,
+        html=args.html,
+        outdir=args.outdir,
+        pointing=args.pointing,
+        fit_spec=args.fit_spec,
+        force=args.force
+    )
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
