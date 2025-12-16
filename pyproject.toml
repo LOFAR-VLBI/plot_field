@@ -1,12 +1,12 @@
 [project]
-name = "lofar-vlbi-pipeline"
+name = "lofar-vlbi-plot"
 authors = [
     {name = "James Petley"},
     {name = "Frits Sweijen"},
     {name = "Leah Morabito"}
 ]
-version = "2025.12.2"
-description = "lofar-vlbi-pipeline containing the cli tool plot_field"
+version = "2025.12.3"
+description = "Repository containing the cli tool for LOFAR-VLBI plot_field"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
@@ -23,7 +23,7 @@ license = "GPL-3.0-or-later"
 keywords = ["radio", "astronomy", "VLBI", "LOFAR"]
 
 [project.urls]
-Repository="https://github.com/LOFAR-VLBI/lofar-vlbi-pipeline"
+Repository="https://github.com/LOFAR-VLBI/plot_field"
 
 [tool.setuptools]
 include-package-data = true

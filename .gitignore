@@ -19,4 +19,4 @@ __pycache__
 assets
 build
 dist
-lofar_vlbi_pipeline.egg-info
+lofar_vlbi_plot.egg-info
