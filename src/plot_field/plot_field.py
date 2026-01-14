@@ -1431,7 +1431,10 @@ def generate_catalogues(
                 os.system("mv vlass_post**.fits  %s" % outfile)
                 convert_vlass_fits(outfile)
             except Exception:
-                print(f"VLASS Download filed for {source['Observation']}")
+                print(f"VLASS Download failed for {source['Observation']}")
+            search_vlass(c, crop=True, crop_scale=256)
+            os.system("mv vlass_post**.fits  %s" % outfile)
+            convert_vlass_fits(outfile)
 
     if html:
         app = make_html(

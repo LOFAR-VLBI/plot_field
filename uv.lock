@@ -597,8 +597,8 @@ wheels = [
 ]
 
 [[package]]
-name = "lofar-vlbi-pipeline"
-version = "2025.12.2"
+name = "lofar-vlbi-plot"
+version = "2025.12.4"
 source = { editable = "." }
 dependencies = [
     { name = "astropy" },
