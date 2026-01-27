@@ -1256,7 +1256,7 @@ def generate_catalogues(
         return
 
     ## if the LoTSS catalogue is empty, write out the delay cals only
-    if len(lotss_catalogue) == 0:
+    if len(lotss_catalogue) == 0 or continue_no_lotss:
         print(
             "Target field not in LoTSS coverage yet! Only writing {:s} based on LBCS".format(
                 delay_cals_file
@@ -1319,8 +1319,9 @@ def generate_catalogues(
         ## check if there are any matches
         if len(result) == 0:
             logging.error(
-                "LoTSS and LBCS coverage exists, but no matches found. This indicates something went wrong, please check your catalogues."
+                "LoTSS and LBCS coverage exists, but no matches found. This indicates something went wrong, please check your catalogues.\n Most likely LoTSS coverage only partially covers your pointing. You can re-run with --continue_no_lotss to ignore your LoTSS catalogue."
             )
+            return
         else:
             # add radius to the catalogue
             # RATar, DECTar = grab_coo_MS(input2strlist_nomapfile(MSname)[0])
