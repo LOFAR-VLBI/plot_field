@@ -178,7 +178,7 @@ def my_lotss_catalogue(
         tb_final = Table.read(outfile, format="csv")
         if "Source_Name" in tb_final.colnames:
             tb_final.rename_column("Source_Name", "Source_id")
-            tb_final.write(outfile, format="csv")
+            tb_final.write(outfile, format="csv",overwrite=True)
     else:
         print("DOWNLOADING LOTSS Skymodel for the target field")
         print("Radius is", Radius)
