@@ -190,7 +190,7 @@ def my_lotss_catalogue(
             # url = 'http://vo.astron.nl/lofartier1/q/cone/scs.xml'
             # HETDEX database.
             # url = 'https://vo.astron.nl/hetdex/lotss-dr1/cone/scs.xml'
-            url = "https://vo.astron.nl/lotss_dr2/q/src_cone/scs.xml"
+            url = "https://vo.astron.nl/lotss_dr3/q/src_cone/scs.xml"
 
             ## query the database
             query = vo.dal.scs.SCSQuery(url, maxrec=10000000)
