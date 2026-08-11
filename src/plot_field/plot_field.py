@@ -1227,7 +1227,7 @@ def generate_catalogues(
         RATar,
         DECTar,
         Radius=lotss_radius,
-        bright_limit_Jy=bright_limit_Jy,
+        bright_limit_Jy=10000,
         faint_limit_Jy=0.0,
         outfile=lotss_catalogue,
         use_vo=True,
