@@ -1239,7 +1239,7 @@ def generate_catalogues(
         DECTar,
         Radius=5.0,
         bright_limit_Jy=1000.0,
-        faint_limit_Jy=10.0,
+        faint_limit_Jy=bright_limit_Jy,
         outfile=os.path.join(outdir, "extreme_catalogue.csv"),
         use_vo=True
     )
