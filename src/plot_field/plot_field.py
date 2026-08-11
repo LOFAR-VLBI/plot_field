@@ -1227,7 +1227,7 @@ def generate_catalogues(
         RATar,
         DECTar,
         Radius=lotss_radius,
-        bright_limit_Jy=10000,
+        bright_limit_Jy=100000.0,
         faint_limit_Jy=0.0,
         outfile=lotss_catalogue,
         use_vo=True,
@@ -1238,7 +1238,7 @@ def generate_catalogues(
         RATar,
         DECTar,
         Radius=5.0,
-        bright_limit_Jy=1000.0,
+        bright_limit_Jy=100000.0,
         faint_limit_Jy=bright_limit_Jy,
         outfile=os.path.join(outdir, "extreme_catalogue.csv"),
         use_vo=True
