@@ -1481,11 +1481,8 @@ def generate_catalogues(
                 # https://science.nrao.edu/science/surveys/vlass
                 # QL images have a 1" pixel scale; cutouts limited to 256 pixels
                 # to retain old behaviour.
-                print("DOWNLOADING")
                 search_vlass(c.ra.value, c.dec.value, size=256 / 3600)
-                print("RENAMING")
                 os.system(f"mv vlass_post*.fits {outfile}")
-                print("CONVERTING")
                 convert_vlass_fits(outfile)
             except Exception:
                 print(f"VLASS Download failed for {source['Observation']}")
