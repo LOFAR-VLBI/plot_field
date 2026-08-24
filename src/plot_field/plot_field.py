@@ -847,7 +847,7 @@ def convert_vlass_fits(fitsfile):
     header = fits.open(fitsfile)[0].header
     wcs = WCS(header).celestial  # Ignore frequency/stokes axis
 
-    image_data = fits.getdata(fitsfile)
+    image_data = fits.getdata(fitsfile).squeeze()
 
     # Shape is (1,1, 3722, 3722). Plot the first image
     interval = PercentileInterval(99.9)
@@ -1539,7 +1539,6 @@ def generate_catalogues(
                 convert_vlass_fits(outfile)
             except Exception:
                 print(f"VLASS Download failed for {source['Observation']}")
-
     if html:
         app = make_html(
             RATar,
