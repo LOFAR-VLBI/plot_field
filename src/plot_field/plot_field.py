@@ -860,6 +860,7 @@ def convert_vlass_fits(fitsfile):
     plt.ylabel("Dec")
 
     plt.savefig(fitsfile[:-5] + ".png")
+    plt.close()
 
 
 def convert_cutout(fitsfile):
