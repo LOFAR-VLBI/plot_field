@@ -20,57 +20,6 @@ from requests.adapters import Retry, HTTPAdapter
 from time import sleep
 
 
-def download_file(url: str, filename=None, target_dir=None, credentials=None) -> str:
-    """Stream downloads files via HTTP
-
-    Args:
-        url (str): URL to download file from.
-        filename (str): filename to download to. Overrides filename defined in the URL.
-        target_dir (str): directory to download file to.
-        credentials (tuple): login credentials if needed.
-
-    Returns:
-        target_dest_dir (str): directory where the file will be downloaded to.
-
-    Raises:
-        ValueError:
-    """
-    if target_dir and not os.path.isdir(target_dir):
-        raise ValueError("Invalid target_dir={} specified".format(target_dir))
-    local_filename = self.get_url_filename(url) if not filename else filename
-
-    if credentials:
-        req = requests.get(url, stream=True, verify=True, auth=credentials)
-    else:
-        req = requests.get(url, stream=True, verify=True)
-    req.raise_for_status()
-    try:
-        file_size = int(req.headers["Content-Length"])
-    except KeyError:
-        if req.headers["Transfer-Encoding"] == "chunked":
-            file_size = 0
-    chunk_size = 1024  # 1 MB
-    num_bars = int(file_size / chunk_size)
-
-    base_path = os.path.abspath(os.path.dirname(__file__))
-    target_dest_dir = (
-        os.path.join(base_path, local_filename)
-        if not target_dir
-        else os.path.join(target_dir, local_filename)
-    )
-    with open(target_dest_dir, "wb") as fp:
-        for chunk in tqdm.tqdm(
-            req.iter_content(chunk_size=chunk_size),
-            total=num_bars,
-            unit="KB",
-            leave=True,
-            file=sys.stdout,
-        ):
-            fp.write(chunk)
-
-    return target_dest_dir
-
-
 def search_vlass(
     ra: float,
     dec: float,
