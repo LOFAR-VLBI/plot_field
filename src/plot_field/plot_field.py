@@ -15,8 +15,50 @@ from astropy.coordinates import SkyCoord
 from astropy import units as u
 from astropy.io import fits
 from astropy.wcs import WCS
+from astroquery.cadc import Cadc
 from requests.adapters import Retry, HTTPAdapter
 from time import sleep
+
+
+def search_vlass(
+    ra: float,
+    dec: float,
+    size: float = 0.1,
+    ddir: str = os.getcwd(),
+):
+    """Download a VLASS image through the Canadian Astronomy Data Centre.
+
+    Args:
+        ra: right ascension of the target cutout.
+        dec: declination of the target cutout.
+        size: diameter of the cutout in degrees.
+        ddir: directory to which to download the images.
+
+    Raises:
+        ValueError: if download fails
+    """
+    position = SkyCoord(ra, dec, unit="deg", frame="icrs")
+    radius = (size / 2) * u.deg
+
+    cadc = Cadc()
+    cadc.TIMEOUT = 600
+    results = cadc.query_region(position, radius=radius, collection="VLASS")
+    if len(results) == 0:
+        raise ValueError(f"No VLASS images found near RA={ra}, Dec={dec}.")
+
+    results.sort("calibrationLevel", reverse=True)
+    urls = cadc.get_image_list(results, position, radius)
+    if len(urls) == 0:
+        raise ValueError(
+            f"CADC returned no downloadable VLASS images near RA={ra}, Dec={dec}."
+        )
+
+    for url in urls[:1]:
+        response = requests.get(url, timeout=120)
+        response.raise_for_status()
+        with open("vlass_poststamp.fits", "wb") as f:
+            f.write(response.content)
+
 
 def format_skycoord(skycoord: SkyCoord) -> str:
     """
@@ -28,8 +70,8 @@ def format_skycoord(skycoord: SkyCoord) -> str:
     Returns:
         str: Formatted string in the format "hhmmss.ss+ddmmss.s"
     """
-    ra = skycoord.ra.to_value('hourangle')
-    dec = skycoord.dec.to_value('deg')
+    ra = skycoord.ra.to_value("hourangle")
+    dec = skycoord.dec.to_value("deg")
 
     ra_hours = int(ra)
     ra_minutes = int((ra - ra_hours) * 60)
@@ -41,11 +83,12 @@ def format_skycoord(skycoord: SkyCoord) -> str:
 
     ra_str = f"ILTJ{ra_hours:02d}{ra_minutes:02d}{ra_seconds:05.2f}"
 
-    dec_sign = '+' if dec >= 0 else '-'
+    dec_sign = "+" if dec >= 0 else "-"
     dec_degrees = abs(dec_degrees)
     dec_str = f"{dec_sign}{dec_degrees:02d}{dec_arcminutes:02d}{dec_arcseconds:04.1f}"
 
     return ra_str + dec_str
+
 
 def sum_digits(n):
     s = 0
@@ -178,7 +221,7 @@ def my_lotss_catalogue(
         tb_final = Table.read(outfile, format="csv")
         if "Source_Name" in tb_final.colnames:
             tb_final.rename_column("Source_Name", "Source_id")
-            tb_final.write(outfile, format="csv",overwrite=True)
+            tb_final.write(outfile, format="csv", overwrite=True)
     else:
         print("DOWNLOADING LOTSS Skymodel for the target field")
         print("Radius is", Radius)
@@ -211,8 +254,10 @@ def my_lotss_catalogue(
             session = requests.Session()
             # Will wait for 0, 20, 40 seconds between attempts.
             retries = Retry(
-                total=8, backoff_factor=0.2, status_forcelist=[500, 502, 503, 504],
-                allowed_methods=["GET", "POST"]
+                total=8,
+                backoff_factor=0.2,
+                status_forcelist=[500, 502, 503, 504],
+                allowed_methods=["GET", "POST"],
             )
             session.mount("https://", HTTPAdapter(max_retries=retries))
 
@@ -769,7 +814,7 @@ def convert_vlass_fits(fitsfile):
     header = fits.open(fitsfile)[0].header
     wcs = WCS(header).celestial  # Ignore frequency/stokes axis
 
-    image_data = fits.getdata(fitsfile)
+    image_data = fits.getdata(fitsfile).squeeze()
 
     # Shape is (1,1, 3722, 3722). Plot the first image
     interval = PercentileInterval(99.9)
@@ -782,6 +827,7 @@ def convert_vlass_fits(fitsfile):
     plt.ylabel("Dec")
 
     plt.savefig(fitsfile[:-5] + ".png")
+    plt.close()
 
 
 def convert_cutout(fitsfile):
@@ -809,9 +855,10 @@ def convert_cutout(fitsfile):
 
 def fit_spectrum(delay_cals_file, outdir):
     from plot_field.fit_synchrotron_spectrum import (
-            fit_from_NED,
-            fit_from_trusted_surveys,
-        )
+        fit_from_NED,
+        fit_from_trusted_surveys,
+    )
+
     result = Table.read(delay_cals_file)
     # Empty columns for fitting parameters within delay calibration
     total_flux_column = Column([None] * len(result), name="fit_flux", unit="Jy")
@@ -1055,6 +1102,7 @@ def gaia_quasar_match(file):
     CatNorth = "J/ApJS/271/54/table4"
 
     v = Vizier(catalog=CatNorth, columns=["Gaia", "RA_ICRS", "DE_ICRS"])
+    v.TIMEOUT = 120
 
     # Match against table
     print(f"Querying GAIA quasars for {file}")
@@ -1340,7 +1388,7 @@ def generate_catalogues(
     if not os.path.exists(outdir):
         os.mkdir(outdir)
     ## if using a user-defined catalogue, don't rename it
-    if lotss_catalogue == 'lotss_catalogue.csv':
+    if lotss_catalogue == "lotss_catalogue.csv":
         lotss_catalogue = os.path.join(outdir, lotss_catalogue)
     lbcs_catalogue = os.path.join(outdir, lbcs_catalogue)
     lotss_result_file = os.path.join(outdir, lotss_result_file)
@@ -1349,7 +1397,7 @@ def generate_catalogues(
 
     ## first check for a valid delay_calibrator file
     if os.path.isfile(delay_cals_file):
-    #if os.path.isfile(lbcs_catalogue) or os.path.isfile(lotss_catalogue):
+        # if os.path.isfile(lbcs_catalogue) or os.path.isfile(lotss_catalogue):
         print("Delay calibrators file {:s} already exists!".format(delay_cals_file))
         if force:
             print("Forcing overwrite")
@@ -1393,7 +1441,7 @@ def generate_catalogues(
         bright_limit_Jy=1000.0,
         faint_limit_Jy=10.0,
         outfile=os.path.join(outdir, "extreme_catalogue.csv"),
-        use_vo=True
+        use_vo=True,
     )
     extreme_catalogue = remove_multiples_position(extreme_catalogue)
     ## if lbcs exists, and either lotss exists or continue_without_lotss = True, continue
@@ -1427,7 +1475,10 @@ def generate_catalogues(
         lbcs_catalogue.add_column(seps)
 
         # Create an ILTJhhmmss.ss+ddmmss.s name on-the-fly.
-        lbcs_catalogue["Source_id"] = [format_skycoord(SkyCoord(ra, dec, unit="deg")) for (ra, dec) in zip(lbcs_catalogue["RA"], lbcs_catalogue["DEC"])]
+        lbcs_catalogue["Source_id"] = [
+            format_skycoord(SkyCoord(ra, dec, unit="deg"))
+            for (ra, dec) in zip(lbcs_catalogue["RA"], lbcs_catalogue["DEC"])
+        ]
 
         ## add in some dummy data
         Total_flux = Column(
@@ -1578,8 +1629,6 @@ def generate_catalogues(
         fit_spectrum(delay_cals_file, outdir)
 
     if vlass:
-        from plot_field.vlass_search import search_vlass
-
         ## Get cutouts of all LBCS sources
         print("Getting cutouts of LBCS sources")
         for i, source in enumerate(result):
@@ -1587,17 +1636,17 @@ def generate_catalogues(
             c = SkyCoord(ra, dec, unit=(u.deg, u.deg))
             outfile = os.path.join(outdir, "%s_vlass.fits" % source["Observation"])
             if os.path.exists(outfile):
+                print(f"{outfile} exists, skipping download.")
                 continue
             try:
-                search_vlass(c, crop=True, crop_scale=256)
-                os.system("mv vlass_post**.fits  %s" % outfile)
+                # https://science.nrao.edu/science/surveys/vlass
+                # QL images have a 1" pixel scale; cutouts limited to 256 pixels
+                # to retain old behaviour.
+                search_vlass(c.ra.value, c.dec.value, size=256 / 3600)
+                os.system(f"mv vlass_post*.fits {outfile}")
                 convert_vlass_fits(outfile)
             except Exception:
                 print(f"VLASS Download failed for {source['Observation']}")
-            search_vlass(c, crop=True, crop_scale=256)
-            os.system("mv vlass_post**.fits  %s" % outfile)
-            convert_vlass_fits(outfile)
-
     if html:
         app = make_html(
             RATar,
@@ -1613,12 +1662,10 @@ def generate_catalogues(
         )
         app.run_server(debug=True, use_reloader=False)
 
-    # return
-
 
 def parse_args():
     parser = argparse.ArgumentParser(
-        prog = "plot-field",
+        prog="plot-field",
         description="Download and plot LOFAR data regarding a field of interest. This provides the information needed to run the PiLOT pipeline.",
     )
     parser.add_argument(
@@ -1778,7 +1825,6 @@ def parse_args():
 
 
 def main():
-
     args = parse_args()
 
     if args.MS is not None:
@@ -1812,8 +1858,9 @@ def main():
         outdir=args.outdir,
         pointing=args.pointing,
         fit_spec=args.fit_spec,
-        force=args.force
+        force=args.force,
     )
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -2002,7 +2049,7 @@ if __name__ == "__main__":
         outdir=args.outdir,
         pointing=args.pointing,
         fit_spec=args.fit_spec,
-        force=args.force
+        force=args.force,
     )
 
 
