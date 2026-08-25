@@ -588,6 +588,7 @@ def make_plot(
     lbcs_catalogue,
     targRA=None,
     targDEC=None,
+    polarized_sources=None,
     nchan=16,
     av_time=1,
     outdir=".",
@@ -684,6 +685,7 @@ def make_plot(
         label="LBCS Sources",
     )
 
+
     c = SphericalCircle(
         centre_coord,
         1.5 * u.deg,
@@ -692,6 +694,22 @@ def make_plot(
         transform=ax.get_transform("fk5"),
     )
     ax.add_patch(c)
+
+    # plot polarized sources
+    polint = np.asarray(polarized_sources["polint"], dtype=float)
+    marker_size = 20 + 100 * polint / np.nanmax(polint)  #20 is just a factor to get bigger markers
+    ax.scatter(
+            polarized_sources["RA_pol"],
+            polarized_sources["Dec_pol"],
+            transform=ax.get_transform("fk5"),
+            marker="D",
+            s=marker_size,
+            facecolors="none",
+            edgecolors="magenta",
+            linewidths=1.5,
+            label="Polarized Sources",
+            zorder=5,
+        )
 
     ### Calculate and plot smallest distance to target
     dist_ids, dist = smallest_distance(RA, DEC, lbcs)
@@ -894,6 +912,138 @@ def ps_match(file):
             t["ps_DEC"][index] = source["MatchDEC"]
 
     t.write(file, overwrite=True)
+
+def _parse_angular_radius(radius):
+    """Return an angular radius as an Astropy Quantity.
+    """
+    if isinstance(radius, u.Quantity):
+        return radius.to(u.deg)
+
+    if isinstance(radius, (int, float, np.integer, np.floating)):
+        return float(radius) * u.deg
+
+    radius = str(radius).strip()
+    try:
+        quantity = u.Quantity(radius)
+        if quantity.unit == u.dimensionless_unscaled:
+            quantity = float(quantity.value) * u.deg
+        return quantity.to(u.deg)
+    except (ValueError, TypeError, u.UnitConversionError) as exc:
+        raise ValueError(
+            f"Could not parse RM-grid radius '{radius}'. "
+            "Use values such as '1.2deg' or '30arcmin'."
+        ) from exc
+
+
+def rmgrid_match(
+    delay_cals_file,
+    rmgrid_catalogue,
+    field_ra,
+    field_dec,
+    field_radius="1.2deg",
+    pol_radius="0.3deg"
+):
+    """find polarized sources within given RA,DEC
+    """
+    if not os.path.isfile(rmgrid_catalogue):
+        raise FileNotFoundError(f"RM-grid catalogue not found: {rmgrid_catalogue}")
+
+    rmgrid = Table.read(rmgrid_catalogue)
+
+    rm_ra = "RA_pol"
+    rm_dec = "Dec_pol"
+
+    pol_columns = ["RA_pol", "Dec_pol", "RM", "RM_err", "polint", "I_144MHz", "fracpol"]
+    missing = [name for name in pol_columns if name not in rmgrid.colnames]
+    if missing:
+        raise KeyError("Missing required RM-grid column(s): " + ", ".join(missing))
+
+    radius = _parse_angular_radius(field_radius)
+    field_centre = SkyCoord(
+        float(field_ra), float(field_dec), unit="deg", frame="icrs"
+    )
+    rm_coords_all = SkyCoord(
+        rmgrid[rm_ra], rmgrid[rm_dec], unit="deg", frame="icrs"
+    )
+    in_field = rm_coords_all.separation(field_centre) <= radius
+    polarized_sources = rmgrid[in_field]
+
+    print(
+        f"Found {len(polarized_sources)} polarized sources within "
+        f"{radius.to_value(u.deg):.4g} deg "
+        f"({radius.to_value(u.arcmin):.4g} arcmin) of "
+        f"RA={float(field_ra):.6f}, DEC={float(field_dec):.6f}"
+    )
+
+    # Now write the data for nearest ones to delay cal.
+    delay_cals = Table.read(delay_cals_file)
+    search_radius = _parse_angular_radius(pol_radius)
+
+    # Initialize output arrays
+    n_pol_sources = np.zeros(len(delay_cals), dtype=int)
+    nearest_pol_dist = np.full(len(delay_cals), np.nan)
+    nearest_polint = np.full(len(delay_cals), np.nan)
+    nearest_fracpol = np.full(len(delay_cals), np.nan)
+    nearest_pol_ra = np.full(len(delay_cals), np.nan)
+    nearest_pol_dec = np.full(len(delay_cals), np.nan)
+
+    # find polarized sources near the delay cals
+    if len(polarized_sources) > 0:
+        pol_coords = SkyCoord(
+            polarized_sources[rm_ra],
+            polarized_sources[rm_dec],
+            unit="deg",
+            frame="icrs",
+        )
+
+        for i, delay_cal in enumerate(delay_cals):
+
+            cal_coord = SkyCoord(
+                float(delay_cal["RA"]),
+                float(delay_cal["DEC"]),
+                unit="deg",
+                frame="icrs",
+            )
+
+            # Distances from this delay calibrator to all polarized sources
+            separations = cal_coord.separation(pol_coords)
+
+            within_radius = separations <= search_radius
+            n_pol_sources[i] = np.count_nonzero(within_radius)
+
+            if n_pol_sources[i] > 0:
+                idx_within = np.where(within_radius)[0]
+                nearest_idx = idx_within[np.argmin(separations[idx_within])]
+
+                nearest_pol_dist[i] = separations[nearest_idx].deg
+                nearest_polint[i] = polarized_sources["polint"][nearest_idx]
+                nearest_fracpol[i] = polarized_sources["fracpol"][nearest_idx]
+                nearest_pol_ra[i] = polarized_sources[rm_ra][nearest_idx]
+                nearest_pol_dec[i] = polarized_sources[rm_dec][nearest_idx]
+
+    # Add columns in delay calibrator table
+    new_columns = {
+        "n_pol": n_pol_sources,
+        "nearest_pol_dist": nearest_pol_dist,
+        "nearest_polint": nearest_polint,
+        "nearest_fracpol": nearest_fracpol,
+        "nearest_pol_ra": nearest_pol_ra,
+        "nearest_pol_dec": nearest_pol_dec,
+    }
+
+    for name, values in new_columns.items():
+        if name in delay_cals.colnames:
+            delay_cals[name] = values
+        else:
+            delay_cals.add_column(Column(values, name=name))
+
+    delay_cals.write(
+        delay_cals_file,
+        format="csv",
+        overwrite=True,
+    )
+
+    return polarized_sources
 
 
 def gaia_quasar_match(file):
@@ -1160,6 +1310,8 @@ def generate_catalogues(
     bright_limit_Jy=5.0,
     lotss_catalogue="lotss_catalogue.csv",
     lbcs_catalogue="lbcs_catalogue.csv",
+    rmgrid_catalogue="../../DR3_RMGrid_v2.fits",
+    pol2delay_radius='0.3deg',
     lotss_result_file="image_catalogue.csv",
     delay_cals_file="delay_calibrators.csv",
     match_tolerance=5.0,
@@ -1398,6 +1550,14 @@ def generate_catalogues(
 
     gaia_quasar_match(delay_cals_file)
     ps_match(delay_cals_file)
+    polarized_sources = rmgrid_match(
+        delay_cals_file,
+        rmgrid_catalogue,
+        RATar,
+        DECTar,
+        im_radius,
+        pol_radius=pol2delay_radius
+    )
 
     print("Assumed averaging - nchannels: %s; time averaging: %s" % (nchan, av_time))
     make_plot(
@@ -1409,6 +1569,7 @@ def generate_catalogues(
         targRA,
         targDEC,
         nchan=nchan,
+        polarized_sources=polarized_sources,
         av_time=av_time,
         outdir=outdir,
     )
@@ -1495,6 +1656,23 @@ def parse_args():
         help="input file for LoTSS catalogue [will be downloaded if does not exist]",
         default="lotss_catalogue.csv",
     )
+    parser.add_argument(
+        "--rmgrid_catalogue",
+        dest="rmgrid_catalogue",
+        type=str,
+        help="input file for rmgrid_catalog [will be downloaded if does not exist]",
+        default="../DR3_RMGrid_v2.fits", # ToDo: Set a default file path/url
+    )
+    parser.add_argument(
+        "--pol2delay_radius",
+        dest="pol2delay_radius",
+        type=str,
+        help=(
+            "Radius around delay calibrator to choose polarized sources. "
+            "Examples: 0.3deg, 30arcmin [default: 0.3deg]"
+        ),
+        default="0.3deg",
+     )
     parser.add_argument(
         "--lbcs_catalogue",
         dest="lbcs_catalogue",
@@ -1620,6 +1798,8 @@ def main():
         bright_limit_Jy=args.bright_limit_Jy,
         lotss_catalogue=args.lotss_catalogue,
         lbcs_catalogue=args.lbcs_catalogue,
+        rmgrid_catalogue=args.rmgrid_catalogue,
+        pol2delay_radius=args.pol2delay_radius,
         lotss_result_file=args.lotss_result_file,
         delay_cals_file=args.delay_cals_file,
         match_tolerance=args.match_tolerance,
@@ -1672,6 +1852,23 @@ if __name__ == "__main__":
         help="input file for LoTSS catalogue [will be downloaded if does not exist]",
         default="lotss_catalogue.csv",
     )
+    parser.add_argument(
+        "--rmgrid_catalogue",
+        dest="rmgrid_catalogue",
+        type=str,
+        help="input file for rmgrid_catalog [will be downloaded if does not exist]",
+        default="../DR3_RMGrid_v2.fits", # ToDo: Set a default file path/url
+    )
+    parser.add_argument(
+        "--pol2delay_radius",
+        dest="pol2delay_radius",
+        type=str,
+        help=(
+            "Radius around delay calibrators to select polarized sources. "
+            "Examples: 0.3deg, 30arcmin [default: 0.3deg]"
+        ),
+        default="0.3deg",
+     )
     parser.add_argument(
         "--lbcs_catalogue",
         dest="lbcs_catalogue",
@@ -1792,6 +1989,8 @@ if __name__ == "__main__":
         lotss_catalogue=args.lotss_catalogue,
         lbcs_catalogue=args.lbcs_catalogue,
         lotss_result_file=args.lotss_result_file,
+        rmgrid_catalogue=args.rmgrid_catalogue,
+        pol2delay_radius=args.pol2delay_radius,
         delay_cals_file=args.delay_cals_file,
         match_tolerance=args.match_tolerance,
         image_limit_Jy=args.image_limit_Jy,
