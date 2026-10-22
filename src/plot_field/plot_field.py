@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-from __future__ import print_function
+import errno
 import os
 import logging
 import io
@@ -8,16 +8,26 @@ import pyvo as vo
 from astropy.table import Table, Column, hstack, unique
 import argparse
 
-# from lofarpipe.support.data_map import DataMap
-# from lofarpipe.support.data_map import DataProduct
 import requests
 from astropy.coordinates import SkyCoord
 from astropy import units as u
 from astropy.io import fits
 from astropy.wcs import WCS
 from astroquery.cadc import Cadc
+from astroquery.vizier import Vizier
 from requests.adapters import Retry, HTTPAdapter
 from time import sleep
+
+
+# Source - https://stackoverflow.com/a/10840586
+# Posted by Matt, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-10-22, License - CC BY-SA 3.0
+def silentremove(filename):
+    try:
+        os.remove(filename)
+    except OSError as e:
+        if e.errno != errno.ENOENT:  # errno.ENOENT = no such file or directory
+            raise  # re-raise exception if a different error occurred
 
 
 def search_vlass(
@@ -178,75 +188,68 @@ def grab_coo_MS(MS):
     return ra_deg, dec_deg
 
 
-def input2strlist_nomapfile(invar):
-    """from bin/download_IONEX.py
-    give the list of MSs from the list provided as a string
-    """
-
-    str_list = None
-    if type(invar) is str:
-        if invar.startswith("[") and invar.endswith("]"):
-            str_list = [f.strip(" '\"") for f in invar.strip("[]").split(",")]
-        else:
-            str_list = [invar.strip(" '\"")]
-    elif type(invar) is list:
-        str_list = [str(f).strip(" '\"") for f in invar]
-    else:
-        raise TypeError("input2strlist: Type " + str(type(invar)) + " unknown!")
-    return str_list
-
-
-def my_lotss_catalogue(
-    RATar,
-    DECTar,
-    Radius=1.5,
-    bright_limit_Jy=5.0,
-    faint_limit_Jy=0.0,
-    outfile="",
-    use_vo=False,
-):
+def download_lotss_catalogue(
+    ra: float,
+    dec: float,
+    radius: float = 1.5,
+    bright_limit_Jy: float = 5.0,
+    faint_limit_Jy: float = 0.0,
+    outfile: str = "",
+    use_vo: bool = False,
+    remove_multiples: bool = False,
+) -> str:
     """
     Download the LoTSS skymodel for the target field
     Parameters
-    ----------
-    ms_input : str
-        String from the list (map) of the target MSs
-    Radius : float (default = 1.5)
-        Radius for the LOTSS cone search in degrees
+        ra : float
+            Right ascension around which to search.
+        dec : float
+            Declination around which to search.
+        radius : float
+            Radius for the cone search in degrees.
+        outfile : str
+            File to save the catalogue to.
+        use_vo : bool
+            Query the ASTRON VO instead of the lofar-surveys service.
 
+    Returns:
+        outfile : str
+            Path to the catalogue.
+
+    Raises:
+        RuntimeError
+            If no sources fall inside the queried region or connection has failed multiple times.
     """
     ## first check if the file already exists
     if os.path.isfile(outfile):
-        print("LOTSS Skymodel for the target field exists on disk, reading in.")
+        print("LOTSS Skymodel for the target field exists on disk, returning that.")
         tb_final = Table.read(outfile, format="csv")
         if "Source_Name" in tb_final.colnames:
             tb_final.rename_column("Source_Name", "Source_id")
             tb_final.write(outfile, format="csv", overwrite=True)
+        return os.path.abspath(outfile)
     else:
-        print("DOWNLOADING LOTSS Skymodel for the target field")
-        print("Radius is", Radius)
-        # Reading a MS to find the coordinate (pyrap)
-        # RATar, DECTar = grab_coo_MS(input2strlist_nomapfile(ms_input)[0])
-
+        print(
+            f"Dowloading LoTSS skymodel for a radius of {radius:.3f} deg around ({ra:.3f}, {dec:.3f})."
+        )
         if use_vo:
-            ## this is the tier 1 database to query
+            # This is the tier 1 database to query
             # url = 'http://vo.astron.nl/lofartier1/q/cone/scs.xml'
             # HETDEX database.
             # url = 'https://vo.astron.nl/hetdex/lotss-dr1/cone/scs.xml'
             url = "https://vo.astron.nl/lotss_dr3/q/src_cone/scs.xml"
 
-            ## query the database
+            # Query the database
             query = vo.dal.scs.SCSQuery(url, maxrec=10000000)
-            query["RA"] = float(RATar)
-            query["DEC"] = float(DECTar)
-            query.radius = float(Radius)
+            query["RA"] = float(ra)
+            query["DEC"] = float(dec)
+            query.radius = float(radius)
             t = query.execute()
 
-            ## convert to VO table
+            # Convert to VO table
             try:
                 tb = t.votable.to_table()
             except AttributeError:
-                # Above statement didn't work, try the alternative.
                 tb = t.to_table()
         else:
             # To get the combined source catalogue, query the surveys server
@@ -262,12 +265,12 @@ def my_lotss_catalogue(
             session.mount("https://", HTTPAdapter(max_retries=retries))
 
             r = session.get(
-                "https://lofar-surveys.org/catalogue_search.csv?ra=%f&dec=%f&radius=%f"
-                % (RATar, DECTar, Radius),
+                f"https://lofar-surveys.org/catalogue_search.csv?ra={ra:f}&dec={dec:f}&radius={radius:f}",
                 timeout=50,
             )
             # Successful HTTP requests return 200.
             if r.status_code != 200:
+                session.close()
                 raise RuntimeError(
                     "Unsuccessful HTTP request querying https://lofar-surveys.org/catalogue_search.csv"
                 )
@@ -277,25 +280,26 @@ def my_lotss_catalogue(
             tb["Min"].name = "Minax"
             session.close()
 
-        flux_sort = tb.argsort("Total_flux")
-        tb_sorted = tb[flux_sort[::-1]]
-        ## and keep only some of the columns
-        colnames = tb_sorted.colnames
-        ## first check for a resolved column
+        # Sort from brightest to faintest
+        tb.sort("Total_flux", reverse=True)
+
+        colnames = tb.colnames
+
         if "Resolved" not in colnames:
             resolved = np.where(
                 is_resolved(
-                    tb_sorted["Total_flux"],
-                    tb_sorted["Peak_flux"],
-                    tb_sorted["Isl_rms"],
+                    tb["Total_flux"],
+                    tb["Peak_flux"],
+                    tb["Isl_rms"],
                 ),
                 "R",
                 "U",
             )
-            tb_sorted["Resolved"] = resolved
-        ## rename source_id column if necessary
-        if "Source_Name" in tb_sorted.colnames:
-            tb_sorted.rename_column("Source_Name", "Source_id")
+            tb["Resolved"] = resolved
+
+        if "Source_Name" in tb.colnames:
+            tb.rename_column("Source_Name", "Source_id")
+
         keep_cols = [
             "Source_id",
             "RA",
@@ -316,92 +320,94 @@ def my_lotss_catalogue(
         if "LAS" in colnames:
             keep_cols = keep_cols + ["LAS"]
 
-        tb_final = tb_sorted[keep_cols]
+        tb_final = tb[keep_cols]
 
         tb_final = tb_final[tb_final["Total_flux"] >= faint_limit_Jy * 1e3]
 
         tb_final = tb_final[tb_final["Total_flux"] <= bright_limit_Jy * 1e3]
 
+        if remove_multiples_position:
+            tb_final = remove_multiples_position(tb_final)
+
         tb_final.write(outfile, format="csv")
 
-    return tb_final
+        return os.path.abspath(outfile)
 
 
-def my_lbcs_catalogue(RATar, DECTar, Radius=1.5, outfile=""):
+def download_lbcs_catalogue(
+    ra: float, dec: float, radius: float = 1.5, outfile: str = ""
+) -> str:
     """
-    Download the LBCS skymodel for the target field
-    Parameters
-    ----------
-    ms_input : str
-        String from the list (map) of the target MSs
-    Radius : float (default = 1.5)
-        Radius for the LOTSS cone search in degrees
+    Download the LBCS skymodel for the given coordinates.
 
+    Args:
+        ra : float
+            Right ascension around which to search.
+        dec : float
+            Declination around which to search.
+        radius : float
+            Radius for the cone search in degrees.
+        outfile : str
+            File to save the catalogue to.
+
+    Returns:
+        outfile : str
+            Path to the catalogue.
+
+    Raises:
+        RuntimeError
+            If no sources fall inside the queried region or connection has failed multiple times.
     """
-    ## first check if the file already exists
-    # print( outfile )
     if os.path.isfile(outfile):
-        print("LBCS Skymodel for the target field exists on disk, reading in.")
-        tb = Table.read(outfile, format="csv")
-        return tb
+        print("LBCS catalogue for the target field exists on disk, returning that.")
+        return os.path.abspath(outfile)
     else:
-        print("DOWNLOADING LBCS Skymodel for the target field")
+        print(
+            f"Dowloading LBCS skymodel for a radius of {radius:.3f} deg around ({ra:.3f}, {dec:.3f})."
+        )
 
-        # Reading a MS to find the coordinate (pyrap)
-        # RATar, DECTar = grab_coo_MS(input2strlist_nomapfile(ms_input)[0])
-
-    ## construct an html query and try to connect
-    # print(RATar, DECTar)
-    url = "https://lofar-surveys.org/lbcs-search.fits?ra=%f&dec=%f&radius=%f" % (
-        float(RATar),
-        float(DECTar),
-        float(Radius),
-    )
-    connected = False
-    while not connected:
+    url = f"https://lofar-surveys.org/lbcs-search.fits?ra={ra:f}&dec={dec:f}&radius={radius:f}"
+    tries = 5
+    while tries > 0:
         try:
             response = requests.get(url, stream=True, verify=True, timeout=60)
             if response.status_code != 200:
                 print(response.headers)
                 raise RuntimeError("Code was %i" % response.status_code)
+
+            with io.BytesIO() as mem:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        mem.write(chunk)
+                mem.seek(0)
+
+                tb = Table.read(mem)
+                if not len(tb) > 1:
+                    logging.critical(
+                        "There are no LBCS sources within the given radius. Check your source is within the LBCS footprint and increase the search radius. Exiting..."
+                    )
+                    raise RuntimeError(
+                        "There are no LBCS sources within the given radius. Check your source is within the LBCS footprint and increase the search radius. Exiting..."
+                    )
+                else:
+                    ## calculate the total FT goodness
+                    ft_total = []
+                    for xx in range(len(tb)):
+                        ft_total.append(sum_digits(tb[xx]["FT_Goodness"]))
+                    ft_col = Column(ft_total, name="FT_total")
+                    tb.add_column(ft_col)
+
+                tb.write(outfile, format="csv")
+                return os.path.abspath(outfile)
         except requests.exceptions.ConnectionError:
             print("Connection error! sleeping 30 seconds before retry...")
             sleep(30)
         except (requests.exceptions.Timeout, requests.exceptions.ReadTimeout):
             print("Timeout! sleeping 30 seconds before retry...")
             sleep(30)
-        else:
-            connected = True
-
-    mem = io.BytesIO()
-    for chunk in response.iter_content(chunk_size=8192):
-        if chunk:
-            mem.write(chunk)
-    mem.seek(0)
-    tb = Table.read(mem)
-    mem.close()
-    del response
-
-    # print( len( tb ) )
-
-    ### Workaround to sort and pick good calibrator info from tb array ###########
-
-    if not len(tb) > 1:
-        logging.critical(
-            "There are no LBCS sources within the given radius. Check your source is within the LBCS footprint and increase the search radius. Exiting..."
-        )
-        return
-    else:
-        ## calculate the total FT goodness
-        ft_total = []
-        for xx in range(len(tb)):
-            ft_total.append(sum_digits(tb[xx]["FT_Goodness"]))
-        ft_col = Column(ft_total, name="FT_total")
-        tb.add_column(ft_col)
-
-    tb.write(outfile, format="csv")
-
-    return tb
+        finally:
+            tries -= 1
+    raise RuntimeError("Failed to download the catalogue after 5 times.")
 
 
 def find_close_objs(lo, lbcs, tolerance=5.0):
@@ -645,7 +651,7 @@ def make_plot(
     f = fits.open("temp.fits")
     w = WCS(f[0].header)
 
-    lbcs = lbcs_catalogue
+    lbcs = Table.read(lbcs_catalogue)
 
     if os.path.exists(lotss_catalogue):
         lotss = Table.read(lotss_catalogue)
@@ -697,7 +703,7 @@ def make_plot(
         )
 
     if len(extreme_catalogue) > 0:
-        for source in extreme_catalogue:
+        for source in Table.read(extreme_catalogue):
             vector_orig = [source["RA"] - RA, source["DEC"] - DEC]
             norm = np.sqrt(vector_orig[0] ** 2 + vector_orig[1] ** 2)
             vector = [vector_orig[0] / norm, vector_orig[1] / norm]
@@ -743,8 +749,8 @@ def make_plot(
 
     closest_calib = lbcs[dist_ids]
     ax.plot(
-        [RA, lbcs_catalogue[0]["RA"]],
-        [DEC, lbcs_catalogue[0]["DEC"]],
+        [RA, lbcs[0]["RA"]],
+        [DEC, lbcs[0]["DEC"]],
         linestyle="--",
         linewidth=2,
         transform=ax.get_transform("fk5"),
@@ -760,13 +766,11 @@ def make_plot(
             transform=ax.get_transform("fk5"),
             label="Target",
         )
-        dist = angular_distance(
-            targRA, targDEC, lbcs_catalogue[0]["RA"], lbcs_catalogue[0]["DEC"]
-        )
+        dist = angular_distance(targRA, targDEC, lbcs[0]["RA"], lbcs[0]["DEC"])
 
         ax.plot(
-            [targRA, lbcs_catalogue[0]["RA"]],
-            [targDEC, lbcs_catalogue[0]["DEC"]],
+            [targRA, lbcs[0]["RA"]],
+            [targDEC, lbcs[0]["DEC"]],
             linestyle="--",
             color="black",
             linewidth=2,
@@ -900,6 +904,13 @@ def fit_spectrum(delay_cals_file, outdir):
 
 
 def ps_match(file):
+    """Matches an input catalogue with Pan-STARRS and adds the
+    ps_id, ps_RA and ps_DEC columns. The input catalogue is
+    **overwritten**.
+
+    Args:
+        file (str): table to match against Pan-STARRS.
+    """
     t = Table.read(file)
 
     ps_id_column = Column([None] * len(t), name="ps_id")
@@ -943,9 +954,14 @@ def ps_match(file):
     t.write(file, overwrite=True)
 
 
-def gaia_quasar_match(file):
-    from astroquery.vizier import Vizier
+def gaia_quasar_match(file: str):
+    """Matches an input catalogue with GAIA quasars and adds the
+    gaia_id, gaia_RA and gaia_DEC columns. The input catalogue is
+    **overwritten**.
 
+    Args:
+        file (str): table to match against GAIA quasars.
+    """
     t = Table.read(file)
     t["_RAJ2000"] = t["RA"] * u.deg
     t["_DEJ2000"] = t["DEC"] * u.deg
@@ -953,6 +969,7 @@ def gaia_quasar_match(file):
 
     v = Vizier(catalog=CatNorth, columns=["Gaia", "RA_ICRS", "DE_ICRS"])
     v.TIMEOUT = 120
+    v.ROW_LIMIT = 5000
 
     # Match against table
     print(f"Querying GAIA quasars for {file}")
@@ -971,12 +988,13 @@ def gaia_quasar_match(file):
     t.add_column(gaia_ra_column)
     t.add_column(gaia_dec_column)
 
-    for source in out:
-        index = source["_q"] - 1
-        t["gaia_id"][index] = source["Gaia"]
-        t["gaia_RA"][index] = source["RA_ICRS"]
-        t["gaia_DEC"][index] = source["DE_ICRS"]
+    source = out[0]
+    index = source["_q"] - 1
+    t["gaia_id"][index] = source["Gaia"]
+    t["gaia_RA"][index] = source["RA_ICRS"]
+    t["gaia_DEC"][index] = source["DE_ICRS"]
 
+    t[index].write(file.replace(".csv", ".gaia_only.csv"), overwrite=True)
     t.write(file, overwrite=True)
 
 
@@ -1197,6 +1215,149 @@ def make_html(
     return app
 
 
+def construct_delay_cal_csv_lotss(
+    ra: float,
+    dec: float,
+    lotss: str,
+    lbcs: str,
+    delay_cals_file: str,
+    match_tolerance: float,
+) -> str:
+    lotss_catalogue = Table.read(lotss)
+    lbcs_catalogue = Table.read(lbcs)
+
+    result = find_close_objs(lotss_catalogue, lbcs_catalogue, tolerance=match_tolerance)
+    ## check if there are any matches
+    if len(result) == 0:
+        logging.critical(
+            "LoTSS and LBCS coverage exists, but no matches found. This indicates something went wrong, please check your catalogues.\n Most likely LoTSS coverage only partially covers your pointing. You can re-run with --continue_no_lotss to ignore your LoTSS catalogue."
+        )
+        raise ValueError(
+            "LoTSS and LBCS coverage exists, but no matches found. This indicates something went wrong, please check your catalogues.\n Most likely LoTSS coverage only partially covers your pointing. You can re-run with --continue_no_lotss to ignore your LoTSS catalogue."
+        )
+    else:
+        # Add radius to the catalogue
+        ptg_coords = SkyCoord(ra, dec, frame="icrs", unit="deg")
+        src_coords = SkyCoord(result["RA"], result["DEC"], frame="icrs", unit="deg")
+        separations = src_coords.separation(ptg_coords)
+        seps = Column(separations.deg, name="Radius")
+        result.add_column(seps)
+
+        # Remove calibrators over 1.2 degrees from pointing centre
+        result = result[result["Radius"] < 1.2]
+
+        # Calculate the new score r/F
+        goodness = [str(score) for score in result["FT_Goodness"]]
+        print(goodness)
+        g = [calculate_gval(calibrator) for calibrator in goodness]
+        gscore = result["Radius"].value / g
+        gscore_column = Column(gscore, name="gscore")
+        result.add_column(gscore_column)
+        result.sort("gscore")
+
+        print(
+            f"There are {len(result)} delay calibrators within 1.2 degrees of the pointing centre"
+        )
+        print("Writing delay calibrator candidate file {:s}".format(delay_cals_file))
+        result.write(delay_cals_file, format="csv", overwrite=True)
+        return os.path.abspath(delay_cals_file)
+
+
+def construct_image_catalogue(
+    ra: float,
+    dec: float,
+    im_radius: float,
+    lotss_result_file: str,
+    lotss: str,
+    image_limit_Jy: float,
+):
+    lotss_catalogue = Table.read(lotss)
+    ## make a flux cut
+    image_index = np.where(lotss_catalogue["Peak_flux"] >= image_limit_Jy * 1e3)[0]
+    flux_cut_sources = lotss_catalogue[image_index]
+
+    ## make a radius cut
+    src_coords = SkyCoord(
+        flux_cut_sources["RA"],
+        flux_cut_sources["DEC"],
+        frame="icrs",
+        unit="deg",
+    )
+    ptg_coords = SkyCoord(ra, dec, frame="icrs", unit="deg")
+    separations = src_coords.separation(ptg_coords)
+    seps = Column(separations.deg, name="Radius")
+    flux_cut_sources.add_column(seps)
+    good_idx = np.where(flux_cut_sources["Radius"] <= im_radius)[0]
+    sources_to_image = flux_cut_sources[good_idx]
+
+    nsrcs = float(len(sources_to_image))
+    print(
+        "There are "
+        + str(nsrcs)
+        + " sources above "
+        + str(image_limit_Jy * 1000)
+        + " mJy within "
+        + str(im_radius)
+        + " degrees of the phase centre."
+    )
+    sources_to_image.write(lotss_result_file, format="csv", overwrite=True)
+    gaia_quasar_match(lotss_result_file)
+    ps_match(lotss_result_file)
+
+
+def construct_delay_cal_csv_nolotss(
+    ra: float, dec: float, lbcs: str, delay_cals_file: str
+) -> str:
+    print(
+        f"Target field not in LoTSS coverage yet! Only writing {delay_cals_file:s} based on LBCS"
+    )
+
+    lbcs_catalogue = Table.read(lbcs)
+    ## Add the radius from phase centre to the catalogue
+    ptg_coords = SkyCoord(ra, dec, frame="icrs", unit="deg")
+    src_coords = SkyCoord(
+        lbcs_catalogue["RA"], lbcs_catalogue["DEC"], frame="icrs", unit="deg"
+    )
+    separations = src_coords.separation(ptg_coords)
+    seps = Column(separations.deg, name="Radius")
+    lbcs_catalogue.add_column(seps)
+
+    # Create an ILTJhhmmss.ss+ddmmss.s name on-the-fly.
+    lbcs_catalogue["Source_id"] = [
+        format_skycoord(SkyCoord(ra, dec, unit="deg"))
+        for (ra, dec) in zip(lbcs_catalogue["RA"], lbcs_catalogue["DEC"])
+    ]
+
+    # Remove duplicate sources if necessary
+    lbcs_catalogue = remove_multiples_position(lbcs_catalogue)
+
+    # Add in some dummy data
+    Total_flux = Column(
+        np.ones(len(lbcs_catalogue)) * 1e3, name="Total_flux", unit="mJy"
+    )
+    lbcs_catalogue.add_column(Total_flux)
+
+    LGZ_Size = Column(
+        np.ones(len(lbcs_catalogue)) * 20.0, name="LGZ_Size", unit="arcsec"
+    )
+    lbcs_catalogue.add_column(LGZ_Size)
+
+    # Remove calibrators over 1.2 degrees from pointing centre
+    lbcs_catalogue = lbcs_catalogue[lbcs_catalogue["Radius"] < 1.2]
+
+    # Calculate the new score r/F
+    goodness = [str(score) for score in lbcs_catalogue["FT_Goodness"]]
+    print(goodness)
+    g = [calculate_gval(calibrator) for calibrator in goodness]
+    gscore = lbcs_catalogue["Radius"].value / g
+    gscore_column = Column(gscore, name="gscore")
+    lbcs_catalogue.add_column(gscore_column)
+    lbcs_catalogue.sort("gscore")
+
+    lbcs_catalogue.write(delay_cals_file, format="csv")
+    return os.path.abspath(delay_cals_file)
+
+
 def generate_catalogues(
     RATar,
     DECTar,
@@ -1222,241 +1383,115 @@ def generate_catalogues(
     fit_spec=False,
     force=False,
 ):
-    # def plugin_main( RA, DEC, **kwargs ):
-    #    im_radius = float(kwargs['im_radius'])
-    #    image_limit_Jy = float(kwargs['image_limit_Jy'])
-    #    bright_limit_Jy = float(kwargs['bright_limit_Jy'])
-    #    match_tolerance = float(kwargs['match_tolerance'])
-    # mslist = DataMap.load(mapfile_in)
-    # MSname = mslist[0].file
-    # For testing
-    # MSname = kwargs['MSname']
-
-    ## prepend everything with outdir
+    # Setup and sanity checks
     if not os.path.exists(outdir):
         os.mkdir(outdir)
-    ## if using a user-defined catalogue, don't rename it
-    if lotss_catalogue == "lotss_catalogue.csv":
-        lotss_catalogue = os.path.join(outdir, lotss_catalogue)
-    lbcs_catalogue = os.path.join(outdir, lbcs_catalogue)
+
+    if force:
+        print("Forcing clean run")
+        silentremove(os.path.join(outdir, delay_cals_file))
+        silentremove(os.path.join(outdir, lotss_catalogue))
+        silentremove(os.path.join(outdir, lbcs_catalogue))
+        silentremove(os.path.join(outdir, lotss_result_file))
+        silentremove(os.path.join(outdir, "extreme_catalogue.csv"))
+
+    if os.path.isfile(os.path.join(outdir, delay_cals_file)):
+        print("Delay calibrators file {:s} already exists!".format(delay_cals_file))
+        print("Returning!")
+        return
+
+    # Set up the initially required catalogues
+    if not os.path.isfile(os.path.join(outdir, lbcs_catalogue)):
+        lbcs_catalogue = download_lbcs_catalogue(
+            RATar,
+            DECTar,
+            radius=lbcs_radius,
+            outfile=os.path.join(outdir, lbcs_catalogue),
+        )
+        sleep(2)
+    elif os.path.isfile(os.path.join(outdir, lbcs_catalogue)) and force:
+        print(f"Overwriting existing LBCS catalogue {lbcs_catalogue}.")
+        lbcs_catalogue = download_lbcs_catalogue(
+            RATar,
+            DECTar,
+            radius=lbcs_radius,
+            outfile=os.path.join(outdir, lbcs_catalogue),
+        )
+        sleep(2)
+    else:
+        print(f"Using existing LBCS catalogue {lbcs_catalogue}.")
+        if len(Table.read(lbcs_catalogue)) == 0:
+            logging.error(f"LBCS catalogue {lbcs_catalogue} has no sources.")
+            raise RuntimeError(f"LBCS catalogue {lbcs_catalogue} has no sources.")
+
+    if not os.path.isfile(os.path.join(outdir, lotss_catalogue)):
+        lotss_catalogue = download_lotss_catalogue(
+            RATar,
+            DECTar,
+            radius=lotss_radius,
+            bright_limit_Jy=bright_limit_Jy,
+            faint_limit_Jy=0.0,
+            outfile=os.path.join(outdir, lotss_catalogue),
+            use_vo=True,
+        )
+    else:
+        print(f"Using existing LoTSS catalogue {lotss_catalogue}.")
+        if len(Table.read(lotss_catalogue)) == 0:
+            logging.warning(f"LoTSS catalogue {lotss_catalogue} has no sources.")
+            if not continue_no_lotss:
+                raise RuntimeError(f"LoTSS catalogue {lotss_catalogue} has no sources.")
+
+    if not os.path.isfile(os.path.join(outdir, "extreme_catalogue.csv")):
+        print("Finding bright sources outside field of view")
+        extreme_catalogue = download_lotss_catalogue(
+            RATar,
+            DECTar,
+            radius=5.0,
+            bright_limit_Jy=1000.0,
+            faint_limit_Jy=10.0,
+            outfile=os.path.join(outdir, "extreme_catalogue.csv"),
+            use_vo=True,
+            remove_multiples=True,
+        )
+    else:
+        print(
+            f"Using existing extreme catalogue {os.path.join(outdir, 'extreme_catalogue.csv')}."
+        )
+        extreme_catalogue = os.path.join(outdir, "extreme_catalogue.csv")
+
+    # Construct all ancillary catalogues
     lotss_result_file = os.path.join(outdir, lotss_result_file)
     delay_cals_file = os.path.join(outdir, delay_cals_file)
-    extreme_file = os.path.join(outdir, "extreme_catalogue.csv")
 
-    ## first check for a valid delay_calibrator file
-    if os.path.isfile(delay_cals_file):
-        # if os.path.isfile(lbcs_catalogue) or os.path.isfile(lotss_catalogue):
-        print("Delay calibrators file {:s} already exists!".format(delay_cals_file))
-        if force:
-            print("Forcing overwrite")
-            os.remove(delay_cals_file)
-            os.remove(lotss_catalogue)
-            os.remove(lbcs_catalogue)
-            try:
-                os.remove(lotss_result_file)
-                os.remove(extreme_file)
-            except:
-                print("No LoTSS files")
-            pass
-        else:
-            print("Returning!")
-            return
-
-    ## look for or download LBCS
-    print("Attempting to find or download LBCS catalogue.")
-    lbcs_catalogue = my_lbcs_catalogue(
-        RATar, DECTar, Radius=lbcs_radius, outfile=lbcs_catalogue
-    )
-
-    sleep(2)
-    ## look for or download LoTSS
-    print("Attempting to find or download LoTSS catalogue.")
-    lotss_catalogue = my_lotss_catalogue(
-        RATar,
-        DECTar,
-        Radius=lotss_radius,
-        bright_limit_Jy=bright_limit_Jy,
-        faint_limit_Jy=0.0,
-        outfile=lotss_catalogue,
-        use_vo=True,
-    )
-
-    print("Finding bright sources outside field")
-    extreme_catalogue = my_lotss_catalogue(
-        RATar,
-        DECTar,
-        Radius=5.0,
-        bright_limit_Jy=1000.0,
-        faint_limit_Jy=10.0,
-        outfile=os.path.join(outdir, "extreme_catalogue.csv"),
-        use_vo=True,
-    )
-    extreme_catalogue = remove_multiples_position(extreme_catalogue)
-    ## if lbcs exists, and either lotss exists or continue_without_lotss = True, continue
-    ## else provide an error message and stop
-    if len(lbcs_catalogue) == 0:
-        logging.error("LBCS coverage does not exist, and catalogue not found on disk.")
-        return
-    if len(lotss_catalogue) == 0 and not continue_no_lotss:
-        logging.error(
-            "LoTSS coverage does not exist, and contine_no_lotss is set to False."
-        )
-        return
-
-    ## if the LoTSS catalogue is empty, write out the delay cals only
-    if len(lotss_catalogue) == 0 or continue_no_lotss:
-        print(
-            "Target field not in LoTSS coverage yet! Only writing {:s} based on LBCS".format(
-                delay_cals_file
-            )
-        )
-
-        ## Add the radius from phase centre to the catalogue
-        # RATar, DECTar = grab_coo_MS(input2strlist_nomapfile(MSname)[0])
-        ptg_coords = SkyCoord(RATar, DECTar, frame="icrs", unit="deg")
-
-        src_coords = SkyCoord(
-            lbcs_catalogue["RA"], lbcs_catalogue["DEC"], frame="icrs", unit="deg"
-        )
-        separations = src_coords.separation(ptg_coords)
-        seps = Column(separations.deg, name="Radius")
-        lbcs_catalogue.add_column(seps)
-
-        # Create an ILTJhhmmss.ss+ddmmss.s name on-the-fly.
-        lbcs_catalogue["Source_id"] = [
-            format_skycoord(SkyCoord(ra, dec, unit="deg"))
-            for (ra, dec) in zip(lbcs_catalogue["RA"], lbcs_catalogue["DEC"])
-        ]
-
-        ## add in some dummy data
-        Total_flux = Column(
-            np.ones(len(lbcs_catalogue)) * 1e3, name="Total_flux", unit="mJy"
-        )
-        lbcs_catalogue.add_column(Total_flux)
-        LGZ_Size = Column(
-            np.ones(len(lbcs_catalogue)) * 20.0, name="LGZ_Size", unit="arcsec"
-        )  ## set to a default of 20 arcsec
-        lbcs_catalogue.add_column(LGZ_Size)
-
-        ## remove duplicate sources if necessary
-        lbcs_catalogue = remove_multiples_position(lbcs_catalogue)
-
-        ## remove calibrators over 1.2 degrees from pointing centre
-        lbcs_catalogue = lbcs_catalogue[lbcs_catalogue["Radius"] < 1.2]
-
-        # Calculate the new score r/F
-        goodness = [str(score) for score in lbcs_catalogue["FT_Goodness"]]
-        print(goodness)
-        g = [calculate_gval(calibrator) for calibrator in goodness]
-        gscore = lbcs_catalogue["Radius"].value / g
-        gscore_column = Column(gscore, name="gscore")
-        lbcs_catalogue.add_column(gscore_column)
-
-        ## order based on radius from the phase centre
-        lbcs_catalogue.sort("gscore")
-
-        ## order based on radius from the phase centre
-        # lbcs_catalogue.sort('Radius')
-
-        ## write the catalogue
-        lbcs_catalogue.write(delay_cals_file, format="csv")
-
-        result = lbcs_catalogue
+    if len(Table.read(lotss_catalogue)) == 0 and continue_no_lotss:
+        construct_delay_cal_csv_nolotss(RATar, DECTar, lbcs_catalogue, delay_cals_file)
     else:
-        ## else continue
-        result = find_close_objs(
-            lotss_catalogue, lbcs_catalogue, tolerance=match_tolerance
+        construct_delay_cal_csv_lotss(
+            RATar,
+            DECTar,
+            lotss_catalogue,
+            lbcs_catalogue,
+            delay_cals_file,
+            match_tolerance,
         )
-        ## check if there are any matches
-        if len(result) == 0:
-            logging.error(
-                "LoTSS and LBCS coverage exists, but no matches found. This indicates something went wrong, please check your catalogues.\n Most likely LoTSS coverage only partially covers your pointing. You can re-run with --continue_no_lotss to ignore your LoTSS catalogue."
-            )
-            return
-        else:
-            # add radius to the catalogue
-            # RATar, DECTar = grab_coo_MS(input2strlist_nomapfile(MSname)[0])
-            # result = lbcs_catalogue
-            ptg_coords = SkyCoord(RATar, DECTar, frame="icrs", unit="deg")
 
-            src_coords = SkyCoord(result["RA"], result["DEC"], frame="icrs", unit="deg")
-            separations = src_coords.separation(ptg_coords)
-            seps = Column(separations.deg, name="Radius")
-            result.add_column(seps)
-
-            ## remove calibrators over 1.2 degrees from pointing centre
-            result = result[result["Radius"] < 1.2]
-
-            # Calculate the new score r/F
-            goodness = [str(score) for score in result["FT_Goodness"]]
-            print(goodness)
-            g = [calculate_gval(calibrator) for calibrator in goodness]
-            gscore = result["Radius"].value / g
-            gscore_column = Column(gscore, name="gscore")
-            result.add_column(gscore_column)
-
-            ## order based on radius from the phase centre
-            result.sort("gscore")
-
-            # result.rename_column('Observation','Source_id')
-
-            ## Write catalogues
-            ## 1 - delay calibrators -- from lbcs_catalogue
-            result.write(delay_cals_file, format="csv", overwrite=True)
-            print(
-                "Writing delay calibrator candidate file {:s}".format(delay_cals_file)
-            )
-
-            ## make a flux cut
-            image_index = np.where(
-                lotss_catalogue["Peak_flux"] >= image_limit_Jy * 1e3
-            )[0]
-            flux_cut_sources = lotss_catalogue[image_index]
-
-            ## make a radius cut
-            src_coords = SkyCoord(
-                flux_cut_sources["RA"],
-                flux_cut_sources["DEC"],
-                frame="icrs",
-                unit="deg",
-            )
-            separations = src_coords.separation(ptg_coords)
-            seps = Column(separations.deg, name="Radius")
-            flux_cut_sources.add_column(seps)
-            good_idx = np.where(flux_cut_sources["Radius"] <= im_radius)[0]
-            sources_to_image = flux_cut_sources[good_idx]
-
-            nsrcs = float(len(sources_to_image))
-            print(
-                "There are "
-                + str(len(result))
-                + " delay calibrators within "
-                + str(im_radius)
-                + " degrees of the pointing centre"
-            )
-            print(
-                "There are "
-                + str(nsrcs)
-                + " sources above "
-                + str(image_limit_Jy * 1000)
-                + " mJy within "
-                + str(im_radius)
-                + " degrees of the phase centre."
-            )
-            sources_to_image.write(lotss_result_file, format="csv", overwrite=True)
-            gaia_quasar_match(lotss_result_file)
-            ps_match(lotss_result_file)
+    construct_image_catalogue(
+        RATar, DECTar, im_radius, lotss_result_file, lotss_catalogue, image_limit_Jy
+    )
 
     gaia_quasar_match(delay_cals_file)
     ps_match(delay_cals_file)
 
+    result = Table.read(delay_cals_file)
+
+    # TODO: refactor the plotting code below
     print("Assumed averaging - nchannels: %s; time averaging: %s" % (nchan, av_time))
     make_plot(
         RATar,
         DECTar,
         lotss_result_file,
         extreme_catalogue,
-        result,
+        delay_cals_file,
         targRA,
         targDEC,
         nchan=nchan,
