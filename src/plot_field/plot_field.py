@@ -1,4 +1,5 @@
 #!/usr/bin/env python
+import errno
 import os
 import logging
 import io
@@ -16,6 +17,17 @@ from astroquery.cadc import Cadc
 from astroquery.vizier import Vizier
 from requests.adapters import Retry, HTTPAdapter
 from time import sleep
+
+
+# Source - https://stackoverflow.com/a/10840586
+# Posted by Matt, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-10-22, License - CC BY-SA 3.0
+def silentremove(filename):
+    try:
+        os.remove(filename)
+    except OSError as e:
+        if e.errno != errno.ENOENT:  # errno.ENOENT = no such file or directory
+            raise  # re-raise exception if a different error occurred
 
 
 def search_vlass(
@@ -639,7 +651,7 @@ def make_plot(
     f = fits.open("temp.fits")
     w = WCS(f[0].header)
 
-    lbcs = lbcs_catalogue
+    lbcs = Table.read(lbcs_catalogue)
 
     if os.path.exists(lotss_catalogue):
         lotss = Table.read(lotss_catalogue)
@@ -691,7 +703,7 @@ def make_plot(
         )
 
     if len(extreme_catalogue) > 0:
-        for source in extreme_catalogue:
+        for source in Table.read(extreme_catalogue):
             vector_orig = [source["RA"] - RA, source["DEC"] - DEC]
             norm = np.sqrt(vector_orig[0] ** 2 + vector_orig[1] ** 2)
             vector = [vector_orig[0] / norm, vector_orig[1] / norm]
@@ -737,8 +749,8 @@ def make_plot(
 
     closest_calib = lbcs[dist_ids]
     ax.plot(
-        [RA, lbcs_catalogue[0]["RA"]],
-        [DEC, lbcs_catalogue[0]["DEC"]],
+        [RA, lbcs[0]["RA"]],
+        [DEC, lbcs[0]["DEC"]],
         linestyle="--",
         linewidth=2,
         transform=ax.get_transform("fk5"),
@@ -754,13 +766,11 @@ def make_plot(
             transform=ax.get_transform("fk5"),
             label="Target",
         )
-        dist = angular_distance(
-            targRA, targDEC, lbcs_catalogue[0]["RA"], lbcs_catalogue[0]["DEC"]
-        )
+        dist = angular_distance(targRA, targDEC, lbcs[0]["RA"], lbcs[0]["DEC"])
 
         ax.plot(
-            [targRA, lbcs_catalogue[0]["RA"]],
-            [targDEC, lbcs_catalogue[0]["DEC"]],
+            [targRA, lbcs[0]["RA"]],
+            [targDEC, lbcs[0]["DEC"]],
             linestyle="--",
             color="black",
             linewidth=2,
@@ -959,6 +969,7 @@ def gaia_quasar_match(file: str):
 
     v = Vizier(catalog=CatNorth, columns=["Gaia", "RA_ICRS", "DE_ICRS"])
     v.TIMEOUT = 120
+    v.ROW_LIMIT = 5000
 
     # Match against table
     print(f"Querying GAIA quasars for {file}")
@@ -977,12 +988,13 @@ def gaia_quasar_match(file: str):
     t.add_column(gaia_ra_column)
     t.add_column(gaia_dec_column)
 
-    for source in out:
-        index = source["_q"] - 1
-        t["gaia_id"][index] = source["Gaia"]
-        t["gaia_RA"][index] = source["RA_ICRS"]
-        t["gaia_DEC"][index] = source["DE_ICRS"]
+    source = out[0]
+    index = source["_q"] - 1
+    t["gaia_id"][index] = source["Gaia"]
+    t["gaia_RA"][index] = source["RA_ICRS"]
+    t["gaia_DEC"][index] = source["DE_ICRS"]
 
+    t[index].write(file.replace(".csv", ".gaia_only.csv"), overwrite=True)
     t.write(file, overwrite=True)
 
 
@@ -1375,25 +1387,30 @@ def generate_catalogues(
     if not os.path.exists(outdir):
         os.mkdir(outdir)
 
+    if force:
+        print("Forcing clean run")
+        silentremove(os.path.join(outdir, delay_cals_file))
+        silentremove(os.path.join(outdir, lotss_catalogue))
+        silentremove(os.path.join(outdir, lbcs_catalogue))
+        silentremove(os.path.join(outdir, lotss_result_file))
+        silentremove(os.path.join(outdir, "extreme_catalogue.csv"))
+
     if os.path.isfile(os.path.join(outdir, delay_cals_file)):
         print("Delay calibrators file {:s} already exists!".format(delay_cals_file))
-        if force:
-            print("Forcing overwrite")
-            os.remove(delay_cals_file)
-            os.remove(lotss_catalogue)
-            os.remove(lbcs_catalogue)
-            try:
-                os.remove(lotss_result_file)
-                os.remove(os.path.join(outdir, "extreme_catalogue.csv"))
-            except:
-                print("No LoTSS files")
-            pass
-        else:
-            print("Returning!")
-            return
+        print("Returning!")
+        return
 
     # Set up the initially required catalogues
     if not os.path.isfile(os.path.join(outdir, lbcs_catalogue)):
+        lbcs_catalogue = download_lbcs_catalogue(
+            RATar,
+            DECTar,
+            radius=lbcs_radius,
+            outfile=os.path.join(outdir, lbcs_catalogue),
+        )
+        sleep(2)
+    elif os.path.isfile(os.path.join(outdir, lbcs_catalogue)) and force:
+        print(f"Overwriting existing LBCS catalogue {lbcs_catalogue}.")
         lbcs_catalogue = download_lbcs_catalogue(
             RATar,
             DECTar,
@@ -1474,7 +1491,7 @@ def generate_catalogues(
         DECTar,
         lotss_result_file,
         extreme_catalogue,
-        result,
+        delay_cals_file,
         targRA,
         targDEC,
         nchan=nchan,
