@@ -448,7 +448,7 @@ def find_close_objs(lo, lbcs, tolerance=5.0):
                 if not isinstance(m_idx, int):
                     m_idx = m_idx[0]
                 lbcs_idx.append(xx)
-                lotss_idx.append(m_idx)
+                lotss_idx.append(match_idx[m_idx])
     lbcs_matches = lbcs[lbcs_idx]
     lotss_matches = lo[lotss_idx]
 
